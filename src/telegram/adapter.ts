@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
-import { Bot, type Context } from "grammy";
+import type { RouteHandlerMethod } from "fastify";
+import { Bot, webhookCallback, type BotConfig, type Context } from "grammy";
 import type { Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
 import { formatDay } from "../time.ts";
 
@@ -14,8 +15,8 @@ const GREETING =
   'Ask "show tasks" to see your Tasks.';
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
-export function createTelegramBot(token: string, core: Core): Bot {
-  const bot = new Bot(token);
+export function createTelegramBot(token: string, core: Core, config?: BotConfig<Context>): Bot {
+  const bot = new Bot(token, config);
 
   bot.command("start", (ctx) => ctx.reply(GREETING));
   // Other bot commands are not messages to file.
@@ -35,6 +36,15 @@ export function createTelegramBot(token: string, core: Core): Bot {
   bot.catch((error) => console.error("Telegram update failed", error.error));
 
   return bot;
+}
+
+/**
+ * The webhook route's handler; a wrong or missing secret gets 401. grammY answers Telegram once the
+ * update's handlers return, and the message handlers above only start the work in the background,
+ * so the answer is immediate. Keep it that way: awaiting the core there would hold Telegram up.
+ */
+export function telegramWebhookHandler(bot: Bot, secretToken: string): RouteHandlerMethod {
+  return webhookCallback(bot, "fastify", { secretToken });
 }
 
 async function handleMessage(

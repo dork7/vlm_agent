@@ -7,7 +7,7 @@ import { loadSeedItems } from "./inventory/items.ts";
 import { createOpenRouter } from "./llm/openrouter.ts";
 import { buildServer } from "./server.ts";
 import { createWhisperTranscriber } from "./transcriber/transcriber.ts";
-import { createTelegramBot } from "./telegram/adapter.ts";
+import { createTelegramBot, telegramWebhookHandler } from "./telegram/adapter.ts";
 import { ensureFirstAdmin } from "./users.ts";
 
 async function main() {
@@ -46,10 +46,17 @@ async function main() {
     await database.close();
     process.exit(1);
   }
-  const server = buildServer({ inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey } });
+  const { mode } = config.telegram;
+  const server = buildServer({
+    inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey },
+    ...(mode.kind === "webhook"
+      ? { webhook: { path: mode.path, handler: telegramWebhookHandler(bot, mode.secretToken) } }
+      : {}),
+  });
 
   const shutdown = async () => {
-    await bot.stop();
+    // In webhook mode the webhook stays registered, so Telegram keeps updates until the bot is back.
+    if (mode.kind === "polling") await bot.stop();
     await server.close();
     await database.close();
     process.exit(0);
@@ -57,8 +64,14 @@ async function main() {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  await server.listen({ port: config.port, host: "127.0.0.1" });
-  // Long polling; resolves only when the bot stops.
+  await server.listen({ port: config.port, host: config.host });
+
+  if (mode.kind === "webhook") {
+    await bot.api.setWebhook(mode.url, { secret_token: mode.secretToken });
+    server.log.info(`Telegram bot @${bot.botInfo.username} receiving updates at ${mode.url}`);
+    return;
+  }
+  // Long polling, which first removes any registered webhook; resolves only when the bot stops.
   bot
     .start({ onStart: (me) => server.log.info(`Telegram bot @${me.username} polling`) })
     .catch((error) => {

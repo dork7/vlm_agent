@@ -1,4 +1,4 @@
-import { MongoClient, type Collection, type Db, type ObjectId } from "mongodb";
+import { MongoClient, MongoServerError, type Collection, type Db, type ObjectId } from "mongodb";
 
 export type ChannelIdentity = { channel: string; channelId: string };
 
@@ -44,11 +44,20 @@ export type TaskDoc = {
   updatedAt: Date;
 };
 
+/** A message the bot has started handling, so that a second delivery of it is ignored. */
+export type ProcessedMessageDoc = {
+  channel: string;
+  chatId: string;
+  messageId: string;
+  receivedAt: Date;
+};
+
 export type Database = {
   db: Db;
   users: Collection<UserDoc>;
   notes: Collection<NoteDoc>;
   tasks: Collection<TaskDoc>;
+  processedMessages: Collection<ProcessedMessageDoc>;
   close(): Promise<void>;
 };
 
@@ -62,11 +71,19 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
     { unique: true, partialFilterExpression: { "channelIdentities.channel": { $exists: true } } },
   );
 
+  const processedMessages = db.collection<ProcessedMessageDoc>("processedMessages");
+  await processedMessages.createIndex({ channel: 1, chatId: 1, messageId: 1 }, { unique: true });
+
   return {
     db,
     users,
     notes: db.collection<NoteDoc>("notes"),
     tasks: db.collection<TaskDoc>("tasks"),
+    processedMessages,
     close: () => client.close(),
   };
+}
+
+export function isDuplicateKeyError(error: unknown): boolean {
+  return error instanceof MongoServerError && error.code === 11000;
 }

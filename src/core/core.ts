@@ -1,4 +1,4 @@
-import type { ChannelIdentity, Database, TaskDoc, TaskDue, UserDoc } from "../db.ts";
+import { isDuplicateKeyError, type ChannelIdentity, type Database, type TaskDoc, type TaskDue, type UserDoc } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
 import { AllModelsFailedError, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
@@ -45,6 +45,8 @@ export type EmitEvent = (event: CoreEvent) => Promise<void>;
 
 /** What happened while handling a message, for its Run record (ticket 12). */
 export type HandledMessage = {
+  /** The Channel had already delivered this message; it was ignored. */
+  duplicate: boolean;
   /** Present for a Voice Message that reached the Transcriber, whether or not it worked. */
   transcription:
     | { model: string; durationMs: number; transcriptLength: number }
@@ -76,6 +78,22 @@ export function createCore(deps: {
       await writeMarkdownCopies(database, user, markdownDir, timezone);
     } catch (error) {
       console.error(`Failed to write Markdown copies for ${user.username}`, error);
+    }
+  };
+
+  /** Records the message as being handled; false when the Channel already delivered it, even if that was before a restart. */
+  const claimMessage = async (message: InboundMessage): Promise<boolean> => {
+    try {
+      await database.processedMessages.insertOne({
+        channel: message.sender.channel,
+        chatId: message.chatId,
+        messageId: message.messageId,
+        receivedAt: now(),
+      });
+      return true;
+    } catch (error) {
+      if (isDuplicateKeyError(error)) return false;
+      throw error;
     }
   };
 
@@ -193,7 +211,8 @@ export function createCore(deps: {
   return {
     async handleMessage(message, emit) {
       // The transcription, and every model attempt and Inventory request, made for this message, even on failure.
-      const handled: HandledMessage = { transcription: null, modelAttempts: [], inventoryRequests: [] };
+      const handled: HandledMessage = { duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [] };
+      if (!(await claimMessage(message))) return { ...handled, duplicate: true };
       const recordingLlm: Llm = {
         async callTool(request) {
           try {

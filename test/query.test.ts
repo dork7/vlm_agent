@@ -164,7 +164,7 @@ describe("core: a Query about the Inventory", () => {
     await send("What do we have?");
 
     const collections = (await database().db.listCollections().toArray()).map((collection) => collection.name);
-    expect(collections.filter((name) => !["notes", "tasks", "users"].includes(name))).toEqual([]);
+    expect(collections.filter((name) => !["notes", "processedMessages", "tasks", "users"].includes(name))).toEqual([]);
     expect(await database().notes.countDocuments()).toBe(0);
     expect(await database().tasks.countDocuments()).toBe(0);
   });

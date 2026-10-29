@@ -86,7 +86,7 @@ describe("core: a Voice Message", () => {
     const task = { heading: "Renew the car insurance", description: "Renew the car insurance", due_date: "2026-11-02" };
     openRouter.script(MODEL, toolCall("save_task", task));
     openRouter.script(MODEL, toolCall("save_task", task));
-    const typed: InboundMessage = { ...voice(0), content: { kind: "text", text: words } };
+    const typed: InboundMessage = { ...voice(0), messageId: "2001", content: { kind: "text", text: words } };
 
     const fromTyping = await send(typed, fakeTranscriber({ transcript: "unused" }));
     const fromVoice = await send(voice(6), fakeTranscriber({ transcript: words }));

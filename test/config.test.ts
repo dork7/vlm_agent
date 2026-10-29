@@ -73,11 +73,44 @@ describe("startup configuration", () => {
     );
   });
 
+  it("long-polls Telegram unless BOT_MODE says webhook", () => {
+    expect(loadConfig(completeEnv).telegram.mode).toEqual({ kind: "polling" });
+    expect(() => loadConfig({ ...completeEnv, BOT_MODE: "carrier-pigeon" })).toThrow(
+      'BOT_MODE must be "polling" or "webhook", got "carrier-pigeon"',
+    );
+  });
+
+  it("in webhook mode requires the webhook URL and secret", () => {
+    expect(() => loadConfig({ ...completeEnv, BOT_MODE: "webhook" })).toThrow(
+      "BOT_MODE=webhook also needs: WEBHOOK_URL, TELEGRAM_WEBHOOK_SECRET",
+    );
+    expect(() =>
+      loadConfig({ ...completeEnv, BOT_MODE: "webhook", WEBHOOK_URL: "http://bot.example.com/hook", TELEGRAM_WEBHOOK_SECRET: "s" }),
+    ).toThrow('WEBHOOK_URL must be an https:// URL, got "http://bot.example.com/hook"');
+    expect(() =>
+      loadConfig({ ...completeEnv, BOT_MODE: "webhook", WEBHOOK_URL: "https://bot.example.com/hook", TELEGRAM_WEBHOOK_SECRET: "has spaces" }),
+    ).toThrow("TELEGRAM_WEBHOOK_SECRET may use only A-Z, a-z, 0-9, _ and -, up to 256 characters");
+
+    const config = loadConfig({
+      ...completeEnv,
+      BOT_MODE: "webhook",
+      WEBHOOK_URL: "https://bot.example.com/telegram/webhook",
+      TELEGRAM_WEBHOOK_SECRET: "s3cret_token-1",
+    });
+    expect(config.telegram.mode).toEqual({
+      kind: "webhook",
+      url: "https://bot.example.com/telegram/webhook",
+      path: "/telegram/webhook",
+      secretToken: "s3cret_token-1",
+    });
+  });
+
   it("reads a complete environment", () => {
     const config = loadConfig(completeEnv);
 
     expect(config.openRouter.models).toEqual(["openai/gpt-4o-mini", "anthropic/claude-haiku"]);
     expect(config.firstAdmin).toEqual({ username: "owner", password: "s3cret", telegramId: "42" });
     expect(config.port).toBe(3000);
+    expect(config.host).toBe("127.0.0.1");
   });
 });
