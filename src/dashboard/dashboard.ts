@@ -1,7 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
 import { writeMarkdownCopies } from "../core/markdown.ts";
-import type { Database, UserDoc } from "../db.ts";
-import { formatDay, instantToWallClock } from "../time.ts";
+import { changeTaskDue, ownTasksInOrder, shownDue } from "../core/tasks.ts";
+import type { Database, TaskDue, UserDoc } from "../db.ts";
+import { formatDay, instantToWallClock, wallClockToInstant } from "../time.ts";
 import { authenticate } from "./auth.ts";
 import { badRequest, field, notFound, parseId, render, type Form } from "./http.ts";
 import { usersPortalRoutes } from "./users-portal.ts";
@@ -60,6 +61,79 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     request.user = user;
   });
 
+  app.get("/", async (_request, reply) => reply.redirect("/tasks"));
+
+  /** A Task's due date for people, on the User's own clock; null when it has none. */
+  const shownTaskDue = (user: UserDoc, due: TaskDue) => {
+    const shown = shownDue(due, timezoneOf(user));
+    return shown && `${formatDay(shown.date)}${shown.time ? `, ${shown.time}` : ""}`;
+  };
+
+  app.get<{ Querystring: { tab?: string } }>("/tasks", async (request, reply) => {
+    const tab = request.query.tab === "done" ? "done" : "open";
+    const tasks = (await ownTasksInOrder(database, request.user._id!, timezoneOf(request.user))).filter(
+      (task) => task.status === tab,
+    );
+    return render(reply, "tasks", { tasks, tab, due: (due: TaskDue) => shownTaskDue(request.user, due) });
+  });
+
+  /** One of the User's own Tasks; anyone else's, or none, is not found. */
+  const ownTask = (user: UserDoc, id: string) => {
+    const _id = parseId(id);
+    return _id ? database.tasks.findOne({ _id, ownerId: user._id! }) : Promise.resolve(null);
+  };
+
+  app.get<{ Params: { id: string } }>("/tasks/:id", async (request, reply) => {
+    const task = await ownTask(request.user, request.params.id);
+    if (!task) return notFound(reply);
+    return render(reply, "task", {
+      task,
+      due: shownDue(task.due, timezoneOf(request.user)),
+      shownDue: shownTaskDue(request.user, task.due),
+    });
+  });
+
+  app.post<{ Params: { id: string }; Body: Form }>("/tasks/:id", async (request, reply) => {
+    const task = await ownTask(request.user, request.params.id);
+    if (!task) return notFound(reply);
+    const heading = field(request.body, "heading");
+    const description = field(request.body, "description");
+    if (!heading) return badRequest(reply, "A Task needs a Heading.");
+    const due = dueFromForm(field(request.body, "due_date"), field(request.body, "due_time"), timezoneOf(request.user));
+    if (due === undefined) {
+      return badRequest(reply, "Give the due date as a calendar date, and a time only with a date.");
+    }
+
+    // The original Transcript is left as it was, so it stays verbatim.
+    await database.tasks.updateOne({ _id: task._id }, { $set: { heading, description, updatedAt: new Date() } });
+    // A new due date goes through the core, so its Reminder is sent again at the new time.
+    if (!sameDue(due, task.due)) await changeTaskDue(database, task._id.toHexString(), due);
+    await refreshMarkdownCopies(request.user);
+    return reply.redirect(`/tasks/${task._id}`, 303);
+  });
+
+  app.post<{ Params: { id: string } }>("/tasks/:id/delete", async (request, reply) => {
+    const task = await ownTask(request.user, request.params.id);
+    if (!task) return notFound(reply);
+    await database.tasks.deleteOne({ _id: task._id });
+    await refreshMarkdownCopies(request.user);
+    return reply.redirect(task.status === "done" ? "/tasks?tab=done" : "/tasks", 303);
+  });
+
+  /** Marking done goes back to the Open tab, reopening back to the Done tab, where the button was. */
+  for (const [action, status, from] of [
+    ["done", "done", "/tasks"],
+    ["reopen", "open", "/tasks?tab=done"],
+  ] as const) {
+    app.post<{ Params: { id: string } }>(`/tasks/:id/${action}`, async (request, reply) => {
+      const task = await ownTask(request.user, request.params.id);
+      if (!task) return notFound(reply);
+      await database.tasks.updateOne({ _id: task._id }, { $set: { status, updatedAt: new Date() } });
+      await refreshMarkdownCopies(request.user);
+      return reply.redirect(from, 303);
+    });
+  }
+
   app.get<{ Querystring: { q?: string } }>("/notes", async (request, reply) => {
     const search = request.query.q?.trim() ?? "";
     const matching = search ? new RegExp(escapeRegExp(search), "i") : null;
@@ -113,6 +187,31 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
   // A child plugin, so it shares this login but adds its own admin-only check.
   await app.register(usersPortalRoutes, { database, defaultTimezone });
 };
+
+/**
+ * The due date a User typed: a date ("YYYY-MM-DD") with an optional time ("HH:MM") on their own clock,
+ * or neither for no due date. Undefined when it isn't one.
+ */
+function dueFromForm(date: string, time: string, timezone: string): TaskDue | undefined {
+  if (!date) return time ? undefined : null;
+  if (!isCalendarDate(date)) return undefined;
+  if (!time) return { kind: "date", date };
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return undefined;
+  return { kind: "moment", at: wallClockToInstant(date, time, timezone) };
+}
+
+function isCalendarDate(date: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(date);
+}
+
+function sameDue(a: TaskDue, b: TaskDue): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind === "date" && b.kind === "date") return a.date === b.date;
+  if (a.kind === "moment" && b.kind === "moment") return a.at.getTime() === b.at.getTime();
+  return false;
+}
 
 /** Text to search for, made safe to use as a pattern. */
 function escapeRegExp(text: string): string {
