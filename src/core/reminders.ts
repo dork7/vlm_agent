@@ -33,6 +33,39 @@ export function deliverByChannel(adapters: Record<string, DeliverReminder>): Del
 }
 
 /**
+ * One-off migration, run at startup before the first Reminder check. Tasks saved before Reminders existed
+ * have no `reminderSentAt` field, which sendDueReminders treats as "not reminded yet", so every one already
+ * due would get a Reminder at once. Those already due are marked reminded as of `now`; the rest get
+ * `reminderSentAt: null` and are reminded when they fall due. Tasks with the field are left alone, so
+ * running it again changes nothing.
+ */
+export async function backfillReminderMarkers(
+  database: Database,
+  defaultTimezone: string,
+  now: Date,
+): Promise<{ markedReminded: number; leftToRemind: number }> {
+  const result = { markedReminded: 0, leftToRemind: 0 };
+  const unmarked = { reminderSentAt: { $exists: false } };
+  const tasks = await database.tasks.find(unmarked).toArray();
+  if (tasks.length === 0) return result;
+
+  const owners = await database.users.find({ _id: { $in: [...new Set(tasks.map((task) => task.ownerId))] } }).toArray();
+  const timezoneOf = new Map(owners.map((owner) => [owner._id!.toHexString(), owner.timezone ?? defaultTimezone]));
+  for (const task of tasks) {
+    const due = dueMoment(task.due, timezoneOf.get(task.ownerId.toHexString()) ?? defaultTimezone);
+    const alreadyDue = due !== null && due.getTime() <= now.getTime();
+    const { modifiedCount } = await database.tasks.updateOne(
+      { _id: task._id, ...unmarked },
+      { $set: { reminderSentAt: alreadyDue ? now : null } },
+    );
+    if (modifiedCount === 0) continue;
+    if (alreadyDue) result.markedReminded++;
+    else result.leftToRemind++;
+  }
+  return result;
+}
+
+/**
  * Sends a Reminder for every open Task whose due moment is at or before `asOf` and that has not had one.
  * Each Task is claimed in MongoDB before its Reminder is handed over, so overlapping calls send it once.
  * A Reminder goes only to a Channel Identity its owner still has; a Task whose owner was deleted gets none.

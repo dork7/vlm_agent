@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { ConfigError, loadConfig } from "./config.ts";
 import { createCore } from "./core/core.ts";
-import { deliverByChannel } from "./core/reminders.ts";
+import { backfillReminderMarkers, deliverByChannel } from "./core/reminders.ts";
 import { connectDatabase } from "./db.ts";
 import { createInventoryClient } from "./inventory/client.ts";
 import { loadSeedItems } from "./inventory/items.ts";
@@ -31,6 +31,14 @@ async function main() {
 
   const database = await connectDatabase(config.mongo.uri, config.mongo.dbName);
   await ensureFirstAdmin(database, { ...config.firstAdmin, timezone: config.defaultTimezone });
+  // Before the first Reminder check, so Tasks saved before Reminders existed don't all get one at once.
+  const backfill = await backfillReminderMarkers(database, config.defaultTimezone, new Date());
+  if (backfill.markedReminded + backfill.leftToRemind > 0) {
+    console.log(
+      `Reminder migration: ${backfill.markedReminded} Tasks already due marked reminded, ` +
+        `${backfill.leftToRemind} left to remind when due`,
+    );
+  }
 
   const core = createCore({
     database,
