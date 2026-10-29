@@ -22,6 +22,8 @@ describe("Telegram webhook route", () => {
             resolve({ duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null });
         });
       },
+      sendDueReminders: async () => {},
+      completeTask: async () => ({ kind: "task-not-found" }),
     };
     const bot = createTelegramBot("123:test-token", core, {
       botInfo: {

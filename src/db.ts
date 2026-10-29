@@ -97,11 +97,15 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
   const clarifications = db.collection<ClarificationDoc>("clarifications");
   await clarifications.createIndex({ ownerId: 1, "source.channel": 1, "source.chatId": 1, status: 1 });
 
+  const tasks = db.collection<TaskDoc>("tasks");
+  // The Reminder check every minute looks for open Tasks not yet reminded.
+  await tasks.createIndex({ status: 1, reminderSentAt: 1 });
+
   return {
     db,
     users,
     notes: db.collection<NoteDoc>("notes"),
-    tasks: db.collection<TaskDoc>("tasks"),
+    tasks,
     processedMessages,
     clarifications,
     close: () => client.close(),

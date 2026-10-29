@@ -1,4 +1,4 @@
-import type { ObjectId } from "mongodb";
+import { ObjectId } from "mongodb";
 import type { Database, TaskDoc, TaskDue } from "../db.ts";
 import { instantToWallClock, wallClockToInstant } from "../time.ts";
 import type { Due } from "./classify.ts";
@@ -10,13 +10,7 @@ const LISTED_TASKS_LIMIT = 30;
 /** All of the owner's Tasks: open ones soonest due first (undated after), then done ones. */
 export async function ownTasksInOrder(database: Database, ownerId: ObjectId, timezone: string): Promise<TaskDoc[]> {
   const tasks = await database.tasks.find({ ownerId }).toArray();
-  // A date-only Task counts as due at 09:00 that day, the same moment its Reminder will go out.
-  const dueAt = (due: TaskDue) =>
-    due === null
-      ? Infinity
-      : due.kind === "moment"
-        ? due.at.getTime()
-        : wallClockToInstant(due.date, "09:00", timezone).getTime();
+  const dueAt = (due: TaskDue) => dueMoment(due, timezone)?.getTime() ?? Infinity;
   return tasks.toSorted(
     (a, b) =>
       Number(a.status === "done") - Number(b.status === "done") ||
@@ -47,6 +41,27 @@ export async function listTasks(
     })),
     more: Math.max(0, sorted.length - LISTED_TASKS_LIMIT),
   };
+}
+
+/**
+ * Changes a Task's due date and clears its Reminder sent marker, so a new Reminder goes out at the new time.
+ * Every due date change (e.g. from the dashboard) goes through here.
+ */
+export async function changeTaskDue(database: Database, taskId: string, due: TaskDue): Promise<void> {
+  await database.tasks.updateOne(
+    { _id: new ObjectId(taskId) },
+    { $set: { due, reminderSentAt: null, updatedAt: new Date() } },
+  );
+}
+
+/** The wall-clock time at which a date-only Task falls due on its owner's clock. */
+export const DATE_ONLY_DUE_TIME = "09:00";
+
+/** When a Task falls due, and its Reminder goes out: a date-only Task at 09:00 that day in its owner's `timezone`. */
+export function dueMoment(due: TaskDue, timezone: string): Date | null {
+  if (due === null) return null;
+  if (due.kind === "moment") return due.at;
+  return wallClockToInstant(due.date, DATE_ONLY_DUE_TIME, timezone);
 }
 
 export function shownDue(due: TaskDue, timezone: string): Due {
