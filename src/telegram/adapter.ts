@@ -1,10 +1,10 @@
 import { Bot, type Context } from "grammy";
-import type { Core, CoreEvent, Due, InboundMessage } from "../core/core.ts";
+import type { Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
 
 const PROCESSING = "processing…";
 const REFUSAL = "Sorry, you're not allowed to use this bot. Please ask its owner for access.";
 const FAILURE = "Sorry, something went wrong processing that. Please try again.";
-const GREETING = "Hi! Type a message and I'll save it as a Note or a Task.";
+const GREETING = 'Hi! Type a message and I\'ll save it as a Note or a Task. Ask "show tasks" to see your Tasks.';
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
 export function createTelegramBot(token: string, core: Core): Bot {
@@ -47,6 +47,8 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
         return show(`Saved Note: ${event.result.heading}`);
       case "task-saved":
         return show(`Saved Task: ${event.result.heading}${formatDue(event.result.due)}`);
+      case "tasks-listed":
+        return show(formatTaskList(event.result.tasks, event.result.more));
       case "refused":
         return show(REFUSAL);
       case "error":
@@ -73,4 +75,15 @@ function formatDue(due: Due): string {
     year: "numeric",
   });
   return ` (due ${day.replace(",", "")}${due.time ? `, ${due.time}` : ""})`;
+}
+
+function formatTaskList(tasks: ListedTask[], more: number): string {
+  if (tasks.length === 0) return "You have no Tasks yet.";
+  const lines = tasks.map(
+    (task, index) =>
+      `${index + 1}. ${task.status === "done" ? "✓ " : ""}${task.heading}${formatDue(task.due)}` +
+      (task.status === "done" ? " (done)" : ""),
+  );
+  if (more > 0) lines.push(`…and ${more} more. See them all on the dashboard.`);
+  return ["Your Tasks:", ...lines].join("\n");
 }

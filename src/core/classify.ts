@@ -4,7 +4,8 @@ export type Due = { date: string; time?: string } | null;
 
 export type Classification =
   | { kind: "note"; heading: string }
-  | { kind: "task"; heading: string; description: string; due: Due };
+  | { kind: "task"; heading: string; description: string; due: Due }
+  | { kind: "list-tasks" };
 
 const HEADING = {
   type: "string",
@@ -55,9 +56,21 @@ const SAVE_TASK: Tool = {
   },
 };
 
+const LIST_TASKS: Tool = {
+  type: "function",
+  function: {
+    name: "list_tasks",
+    description:
+      "Show the person all their saved Tasks. Use only when they ask to see their Tasks or to-do list, " +
+      "not when they ask to add something to it.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
 const SYSTEM_PROMPT =
   "You file a person's messages. Read the message and call exactly one tool that fits it: " +
-  "save_note for something to remember, save_task for something to do.";
+  "save_note for something to remember, save_task for something to do, " +
+  "list_tasks when they ask to see their Tasks.";
 
 export async function classify(
   llm: Llm,
@@ -74,7 +87,7 @@ export async function classify(
       },
       { role: "user", content: transcript },
     ],
-    tools: [SAVE_NOTE, SAVE_TASK],
+    tools: [SAVE_NOTE, SAVE_TASK, LIST_TASKS],
   });
 
   const args = toolArguments(call.arguments);
@@ -88,6 +101,8 @@ export async function classify(
         description: requiredString(args, "description"),
         due: due(optionalString(args, "due_date"), optionalString(args, "due_time")),
       };
+    case LIST_TASKS.function.name:
+      return { kind: "list-tasks" };
     default:
       throw new Error(`Model called unknown tool "${call.name}"`);
   }

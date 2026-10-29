@@ -23,6 +23,12 @@ export function wallClockToInstant(date: string, time: string, timezone: string)
 
 const HALF_DAY = 12 * 60 * 60 * 1000;
 
+/** The date ("YYYY-MM-DD") and time ("HH:MM") the wall clock in `timezone` shows at `instant`. */
+export function instantToWallClock(instant: Date, timezone: string): { date: string; time: string } {
+  const p = partsIn(instant, timezone);
+  return { date: `${p.year}-${pad(p.month)}-${pad(p.day)}`, time: `${pad(p.hour)}:${pad(p.minute)}` };
+}
+
 export function isValidTimezone(timezone: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: timezone });

@@ -1,7 +1,8 @@
-import type { ChannelIdentity, Database, TaskDue } from "../db.ts";
+import type { ObjectId } from "mongodb";
+import type { ChannelIdentity, Database, TaskDoc, TaskDue } from "../db.ts";
 import type { Llm } from "../llm/openrouter.ts";
 import { findUserByChannelIdentity } from "../users.ts";
-import { todayIn, wallClockToInstant } from "../time.ts";
+import { instantToWallClock, todayIn, wallClockToInstant } from "../time.ts";
 import { classify, type Due } from "./classify.ts";
 
 export type { Due };
@@ -18,8 +19,15 @@ export type Result =
   | { kind: "note-saved"; heading: string }
   /** `due` is the date and optional time on the User's own clock. */
   | { kind: "task-saved"; heading: string; due: Due }
+  | { kind: "tasks-listed"; tasks: ListedTask[]; more: number }
   | { kind: "refused" }
   | { kind: "error" };
+
+/** A Task as shown to its owner; `due` is on the owner's own clock. */
+export type ListedTask = { heading: string; due: Due; status: TaskDoc["status"] };
+
+/** The most Tasks one reply lists, so it fits in a single Channel message. */
+const LISTED_TASKS_LIMIT = 30;
 
 export type CoreEvent = { type: "processing-started" } | { type: "result"; result: Result };
 
@@ -58,6 +66,12 @@ export function createCore(deps: {
       } catch (error) {
         console.error("Classification failed", error);
         await emit({ type: "result", result: { kind: "error" } });
+        return;
+      }
+
+      if (classification.kind === "list-tasks") {
+        const { tasks, more } = await listTasks(database, user._id!, timezone);
+        await emit({ type: "result", result: { kind: "tasks-listed", tasks, more } });
         return;
       }
 
@@ -103,4 +117,41 @@ function storedDue(due: Due, timezone: string): TaskDue {
   if (due === null) return null;
   if (due.time === undefined) return { kind: "date", date: due.date };
   return { kind: "moment", at: wallClockToInstant(due.date, due.time, timezone) };
+}
+
+/** The owner's Tasks: open ones soonest due first (undated after), then done ones. */
+async function listTasks(
+  database: Database,
+  ownerId: ObjectId,
+  timezone: string,
+): Promise<{ tasks: ListedTask[]; more: number }> {
+  const tasks = await database.tasks.find({ ownerId }).toArray();
+  // A date-only Task counts as due at 09:00 that day, the same moment its Reminder will go out.
+  const dueAt = (due: TaskDue) =>
+    due === null
+      ? Infinity
+      : due.kind === "moment"
+        ? due.at.getTime()
+        : wallClockToInstant(due.date, "09:00", timezone).getTime();
+  const sorted = tasks.toSorted(
+    (a, b) =>
+      Number(a.status === "done") - Number(b.status === "done") ||
+      dueAt(a.due) - dueAt(b.due) ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  );
+
+  return {
+    tasks: sorted.slice(0, LISTED_TASKS_LIMIT).map((task) => ({
+      heading: task.heading,
+      due: shownDue(task.due, timezone),
+      status: task.status,
+    })),
+    more: Math.max(0, sorted.length - LISTED_TASKS_LIMIT),
+  };
+}
+
+function shownDue(due: TaskDue, timezone: string): Due {
+  if (due === null) return null;
+  if (due.kind === "date") return { date: due.date };
+  return instantToWallClock(due.at, timezone);
 }
