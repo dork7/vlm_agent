@@ -10,7 +10,7 @@ import {
   type UserDoc,
 } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
-import type { Llm, ModelAttempt } from "../llm/openrouter.ts";
+import { isLocalModel, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
@@ -63,10 +63,14 @@ export type Result =
   | { kind: "task-saved"; heading: string; due: Due }
   /** `date` is the day the list was limited to, or null for all the User's Tasks. */
   | { kind: "tasks-listed"; tasks: ListedTask[]; more: number; date: string | null }
+  /** Every one of the User's Notes, newest first. */
+  | { kind: "notes-listed"; notes: ListedNote[] }
   /** A plain-language answer to a Query about the Inventory. */
   | { kind: "query-answered"; answer: string }
   /** A Command: changing Inventory data is not supported yet. */
   | { kind: "command-declined" }
+  /** A greeting; the Channel says hi and what the bot can do. */
+  | { kind: "greeted" }
   /** A Voice Message over the 5-minute limit; the User is asked to split it. */
   | { kind: "voice-too-long"; maxSeconds: number }
   | { kind: "refused" }
@@ -75,13 +79,20 @@ export type Result =
 /** A Task as shown to its owner; `due` is on the owner's own clock. */
 export type ListedTask = { heading: string; due: Due; status: TaskDoc["status"] };
 
+/** A Note as shown to its owner. */
+export type ListedNote = { heading: string; text: string };
+
 export type CoreEvent =
   | { type: "processing-started" }
   | { type: "result"; result: Result }
   /** The message is unclear; the User is asked which option it is. */
   | { type: "clarification-needed"; clarificationId: string; options: ClarificationOption[] };
 
-export type EmitEvent = (event: CoreEvent) => Promise<void>;
+/** Which model answered for a result or Clarification: one on OpenRouter, or one on the local model server. */
+export type EventSource = { processedBy: "openrouter" | "local" };
+
+/** `source` is absent when no model answered, e.g. for a refusal or when every model failed. */
+export type EmitEvent = (event: CoreEvent, source?: EventSource) => Promise<void>;
 
 /** What happened while handling a message, for its Run record (ticket 12). */
 export type HandledMessage = {
@@ -304,6 +315,11 @@ export function createCore(deps: {
       return true;
     }
 
+    if (classification.kind === "greeting") {
+      await emit({ type: "result", result: { kind: "greeted" } });
+      return true;
+    }
+
     if (classification.kind === "unclear") {
       const { insertedId } = await database.clarifications.insertOne({
         ownerId: user._id!,
@@ -324,6 +340,15 @@ export function createCore(deps: {
       const { date } = classification;
       const { tasks, more } = await listTasks(database, user._id!, timezone, date);
       await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
+      return true;
+    }
+
+    if (classification.kind === "list-notes") {
+      const notes = await database.notes.find({ ownerId: user._id! }).sort({ createdAt: -1, _id: -1 }).toArray();
+      await emit({
+        type: "result",
+        result: { kind: "notes-listed", notes: notes.map((note) => ({ heading: note.heading, text: note.text })) },
+      });
       return true;
     }
 
@@ -390,8 +415,11 @@ export function createCore(deps: {
       const recorder = await startRun(database, { sender, chatId, messageId, content: message.content.kind }, now);
       handled.runId = recorder.id.toHexString();
       try {
+        // Each result and Clarification says which side's model answered.
+        const emitWithSource: EmitEvent = (event) =>
+          emit(event, event.type === "processing-started" ? undefined : sourceOf(handled.modelAttempts));
         await handle(message, {
-          emit: recordingEmit(recorder, emit),
+          emit: recordingEmit(recorder, emitWithSource),
           handled,
           llm: recordingLlm(recorder, deps.llm, handled),
           inventory: recordingInventory(recorder, deps.inventory, handled),
@@ -406,6 +434,13 @@ export function createCore(deps: {
       return handled;
     },
   };
+}
+
+/** The side of the last model that answered, or undefined when none did. */
+function sourceOf(attempts: ModelAttempt[]): EventSource | undefined {
+  const answered = attempts.findLast((attempt) => attempt.outcome === "succeeded");
+  if (!answered) return undefined;
+  return { processedBy: isLocalModel(answered.model) ? "local" : "openrouter" };
 }
 
 function storedDue(due: Due, timezone: string): TaskDue {

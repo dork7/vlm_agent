@@ -100,7 +100,7 @@ export type RunStage = {
 export type RunStatus = "in-progress" | "succeeded" | "failed" | "awaiting-clarification" | "refused";
 
 /** What the message turned out to be. */
-export type RunType = "note" | "task" | "query" | "task-list" | "command";
+export type RunType = "note" | "task" | "query" | "task-list" | "note-list" | "command" | "greeting";
 
 /** One pass of one inbound message through the bot, from arrival to the final reply. */
 export type RunDoc = {

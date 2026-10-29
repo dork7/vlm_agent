@@ -10,10 +10,13 @@ export type Classification =
   | { kind: "task"; heading: string; description: string; due: Due }
   /** `date` ("YYYY-MM-DD") limits the list to Tasks due that day on the User's own clock. */
   | { kind: "list-tasks"; date: string | null }
+  | { kind: "list-notes" }
   /** A Query: the model's first Inventory lookup, and the conversation it came from so it can continue. */
   | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
   /** A Command: a request to change Inventory data, which is not supported yet. */
   | { kind: "command" }
+  /** A greeting such as "hi", answered by saying what the bot can do. */
+  | { kind: "greeting" }
   /** The model can't tell whether the message is a Note, Task or Query, so a Clarification is asked. */
   | { kind: "unclear" };
 
@@ -88,6 +91,17 @@ const LIST_TASKS: Tool = {
   },
 };
 
+const LIST_NOTES: Tool = {
+  type: "function",
+  function: {
+    name: "list_notes",
+    description:
+      'Show the person all their saved Notes. Use only when they ask to see their Notes, such as "show notes" ' +
+      'or "what are my notes?", not when they want something saved as a Note.',
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
 const CHANGE_INVENTORY: Tool = {
   type: "function",
   function: {
@@ -95,6 +109,17 @@ const CHANGE_INVENTORY: Tool = {
     description:
       "Use when the person asks to change Inventory data, such as adding or removing items or changing quantities. " +
       "Changes are not supported yet, so the request will be declined.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
+const GREET: Tool = {
+  type: "function",
+  function: {
+    name: "greet",
+    description:
+      'Use when the message is only a greeting or small talk, such as "hi", "hello" or "good morning", ' +
+      "with nothing to save or look up.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
 };
@@ -123,8 +148,10 @@ const SYSTEM_PROMPT =
   "You file a person's messages. Read the message and call exactly one tool that fits it: " +
   "save_note for something to remember, save_task for something to do, " +
   "list_tasks when they ask to see their Tasks, " +
+  "list_notes when they ask to see their Notes, " +
   "search_items or get_item when they ask about the Inventory (you will answer once you have the results), " +
   "change_inventory when they ask to change Inventory data, " +
+  "greet when it is only a greeting, " +
   "ask_clarification only when you can't tell whether it is a Note, a Task or a Query.";
 
 /**
@@ -152,7 +179,7 @@ export async function classify(
   ];
   const tools =
     fixedAs === undefined
-      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, ASK_CLARIFICATION]
+      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, LIST_NOTES, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, GREET, ASK_CLARIFICATION]
       : TOOLS_FOR[fixedAs];
   return llm.callTool({
     messages,
@@ -178,8 +205,12 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[], off
       };
     case LIST_TASKS.function.name:
       return { kind: "list-tasks", date: listedDate(optionalString(args, "date")) };
+    case LIST_NOTES.function.name:
+      return { kind: "list-notes" };
     case CHANGE_INVENTORY.function.name:
       return { kind: "command" };
+    case GREET.function.name:
+      return { kind: "greeting" };
     case ASK_CLARIFICATION.function.name:
       return { kind: "unclear" };
     default:

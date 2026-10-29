@@ -112,5 +112,12 @@ describe("startup configuration", () => {
     expect(config.firstAdmin).toEqual({ username: "owner", password: "s3cret", telegramId: "42" });
     expect(config.port).toBe(3000);
     expect(config.host).toBe("127.0.0.1");
+    expect(config.openRouter.local).toBeUndefined();
+  });
+
+  it("reads the local model server used as the last fallback", () => {
+    const config = loadConfig({ ...completeEnv, LOCAL_LLM_BASE_URL: "http://localhost:8080/v1/" });
+
+    expect(config.openRouter.local).toEqual({ baseUrl: "http://localhost:8080/v1" });
   });
 });

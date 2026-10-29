@@ -37,7 +37,9 @@ const RESULT_TYPES: Partial<Record<Result["kind"], RunType>> = {
   "task-saved": "task",
   "query-answered": "query",
   "tasks-listed": "task-list",
+  "notes-listed": "note-list",
   "command-declined": "command",
+  greeted: "greeting",
 };
 
 /** Saves an in-progress Run for the message straight away, so a Run cut short by a restart still shows. */

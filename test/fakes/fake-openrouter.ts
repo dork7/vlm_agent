@@ -9,6 +9,8 @@ export type FakeOpenRouter = {
   /** Queue a response for the next request made to this model. */
   script(model: string, response: ScriptedResponse): void;
   requests: Array<{ model: string; body: any }>;
+  /** The model IDs `GET /models` lists; null makes it respond 500. */
+  models: string[] | null;
 };
 
 /** A chat-completions response in which the model calls one tool with these arguments. */
@@ -50,10 +52,16 @@ export function useFakeOpenRouter(): FakeOpenRouter {
       queues.set(model, [...(queues.get(model) ?? []), response]);
     },
     requests: [],
+    models: [],
   };
 
   beforeAll(async () => {
     server = createServer(async (req, res) => {
+      if (req.method === "GET" && req.url === "/models") {
+        res.writeHead(fake.models ? 200 : 500, { "content-type": "application/json" });
+        res.end(JSON.stringify(fake.models ? { object: "list", data: fake.models.map((id) => ({ id, object: "model" })) } : {}));
+        return;
+      }
       let raw = "";
       for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw);
@@ -73,6 +81,7 @@ export function useFakeOpenRouter(): FakeOpenRouter {
   afterEach(() => {
     queues.clear();
     fake.requests.length = 0;
+    fake.models = [];
   });
 
   afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));

@@ -8,7 +8,8 @@ export type Config = {
   markdownDir: string;
   telegram: { botToken: string; mode: TelegramMode };
   mongo: { uri: string; dbName: string };
-  openRouter: { apiKey: string; baseUrl: string; models: string[] };
+  /** With `local`, an OpenAI-compatible server on this machine whose models are tried after every OpenRouter one. */
+  openRouter: { apiKey: string; baseUrl: string; models: string[]; local?: { baseUrl: string } };
   /** The Inventory API the model's tools call over HTTP (ADR 0002), and the key this app's own one accepts. */
   inventory: { baseUrl: string; apiKey: string };
   transcriber: { ffmpegPath: string; whisperPath: string; modelPath: string };
@@ -73,6 +74,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
       apiKey: required("OPENROUTER_API_KEY"),
       baseUrl: value("OPENROUTER_BASE_URL") ?? "https://openrouter.ai/api/v1",
       models,
+      ...(value("LOCAL_LLM_BASE_URL") ? { local: { baseUrl: value("LOCAL_LLM_BASE_URL")!.replace(/\/+$/, "") } } : {}),
     },
     inventory: {
       baseUrl: value("INVENTORY_BASE_URL") ?? `http://127.0.0.1:${port}/inventory`,

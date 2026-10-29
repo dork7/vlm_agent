@@ -6,7 +6,9 @@ import type {
   Core,
   CoreEvent,
   Due,
+  EventSource,
   InboundMessage,
+  ListedNote,
   ListedTask,
   ReminderEvent,
 } from "../core/core.ts";
@@ -25,9 +27,19 @@ const CLARIFICATION_BUTTON = /^clarify:([0-9a-f]{24}):(note|task|query)$/;
 /** A tapped Reminder "Done" button's data: `done:<Task ID>`. */
 const DONE_BUTTON = /^done:([0-9a-f]{24})$/;
 const TASK_NOT_FOUND = "Sorry, I couldn't find that Task. It may have been deleted.";
-const GREETING =
-  "Hi! Send a Voice Message or type, and I'll save it as a Note or a Task, or look something up in the Inventory. " +
-  'Ask "show tasks" to see your Tasks.';
+const PROCESSED_BY: Record<EventSource["processedBy"], string> = {
+  openrouter: "Processed by OpenRouter",
+  local: "Processed by local AI",
+};
+const GREETING = [
+  "Hi! Here's what I can do. Type or send a Voice Message and I'll:",
+  "• Save it as a Note, for anything you want to remember",
+  '• Save it as a Task, with a due date if you give one ("call the supplier Thursday at 3")',
+  "• Send you a Reminder when a Task is due, with a Done button",
+  '• Show your Tasks when you ask, e.g. "show tasks" or "what\'s due tomorrow?"',
+  '• Answer questions about the Inventory, e.g. "how many blue mugs do we have?"',
+  "You can also see and edit everything on the dashboard.",
+].join("\n");
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
 export function createTelegramBot(token: string, core: Core, config?: BotConfig<Context>): Bot {
@@ -118,35 +130,25 @@ async function handleMessage(
     else await ctx.api.editMessageText(ctx.chat!.id, replyId, text, extra);
   };
 
-  const render = async (event: CoreEvent) => {
+  const render = async (event: CoreEvent, source?: EventSource) => {
     if (event.type === "processing-started") {
       if (replyId === undefined) replyId = (await ctx.reply(PROCESSING)).message_id;
       else await show(PROCESSING);
       return;
     }
+    // The reply ends by saying which side's model processed the message; a failure says nothing about it.
+    const signed = (text: string) => (source ? `${text}\n\n${PROCESSED_BY[source.processedBy]}` : text);
     if (event.type === "clarification-needed") {
       const buttons = new InlineKeyboard();
       for (const option of event.options) buttons.text(OPTION_LABELS[option], `clarify:${event.clarificationId}:${option}`);
-      return show(CLARIFICATION_QUESTION, buttons);
+      return show(signed(CLARIFICATION_QUESTION), buttons);
     }
-    switch (event.result.kind) {
-      case "note-saved":
-        return show(`Saved Note: ${event.result.heading}`);
-      case "task-saved":
-        return show(`Saved Task: ${event.result.heading}${formatDue(event.result.due)}`);
-      case "tasks-listed":
-        return show(formatTaskList(event.result.tasks, event.result.more, event.result.date));
-      case "query-answered":
-        return show(event.result.answer);
-      case "command-declined":
-        return show(COMMAND_DECLINED);
-      case "voice-too-long":
-        return show(VOICE_TOO_LONG(event.result.maxSeconds));
-      case "refused":
-        return show(REFUSAL);
-      case "error":
-        return show(FAILURE);
-    }
+    // A reply too long for one Telegram message continues in new ones; the source goes at the very end.
+    const pages = resultPages(event.result);
+    const last = pages.length - 1;
+    if (event.result.kind !== "error") pages[last] = signed(pages[last]!);
+    await show(pages[0]!);
+    for (const page of pages.slice(1)) await ctx.reply(page);
   };
 
   try {
@@ -154,6 +156,34 @@ async function handleMessage(
   } catch (error) {
     console.error("Failed to process Telegram message", error);
     await show(FAILURE).catch((replyError) => console.error("Failed to send failure reply", replyError));
+  }
+}
+
+/** The reply's text, as one Telegram message per page; only a Notes list can need more than one. */
+function resultPages(result: Extract<CoreEvent, { type: "result" }>["result"]): string[] {
+  return result.kind === "notes-listed" ? formatNoteList(result.notes) : [resultText(result)];
+}
+
+function resultText(result: Exclude<Extract<CoreEvent, { type: "result" }>["result"], { kind: "notes-listed" }>): string {
+  switch (result.kind) {
+    case "note-saved":
+      return `Saved Note: ${result.heading}`;
+    case "task-saved":
+      return `Saved Task: ${result.heading}${formatDue(result.due)}`;
+    case "tasks-listed":
+      return formatTaskList(result.tasks, result.more, result.date);
+    case "query-answered":
+      return result.answer;
+    case "command-declined":
+      return COMMAND_DECLINED;
+    case "greeted":
+      return GREETING;
+    case "voice-too-long":
+      return VOICE_TOO_LONG(result.maxSeconds);
+    case "refused":
+      return REFUSAL;
+    case "error":
+      return FAILURE;
   }
 }
 
@@ -172,6 +202,26 @@ async function downloadFile(ctx: Context, fileId: string, toPath: string) {
 function formatDue(due: Due): string {
   if (due === null) return "";
   return ` (due ${formatDay(due.date)}${due.time ? `, ${due.time}` : ""})`;
+}
+
+/** Each Note's heading and text, packed into pages that leave room under Telegram's 4096-character limit for the source line. */
+function formatNoteList(notes: ListedNote[]): string[] {
+  if (notes.length === 0) return ["You have no Notes yet."];
+  const pageLimit = 4000;
+  const blocks = notes.flatMap((note, index) => {
+    const block = `${index + 1}. ${note.heading}\n${note.text}`;
+    // A Note longer than a whole page is cut across pages.
+    const pieces = [];
+    for (let start = 0; start < block.length; start += pageLimit) pieces.push(block.slice(start, start + pageLimit));
+    return pieces;
+  });
+  const pages = ["Your Notes:"];
+  for (const block of blocks) {
+    const current = pages.at(-1)!;
+    if (current.length + 2 + block.length <= pageLimit) pages[pages.length - 1] = `${current}\n\n${block}`;
+    else pages.push(block);
+  }
+  return pages;
 }
 
 function formatTaskList(tasks: ListedTask[], more: number, date: string | null): string {
