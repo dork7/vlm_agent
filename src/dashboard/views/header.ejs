@@ -7,8 +7,10 @@
   <style>
     body { font-family: system-ui, sans-serif; max-width: 48rem; margin: 0 auto; padding: 1rem; line-height: 1.5; }
     nav { display: flex; gap: 1rem; border-bottom: 1px solid #ccc; padding-bottom: .5rem; margin-bottom: 1rem; }
-    ul.notes { list-style: none; padding: 0; }
-    ul.notes li { border-bottom: 1px solid #eee; padding: .5rem 0; }
+    ul.notes, ul.tasks { list-style: none; padding: 0; }
+    ul.notes li, ul.tasks li { border-bottom: 1px solid #eee; padding: .5rem 0; }
+    .tabs a { margin-right: 1rem; }
+    .tabs a[aria-current] { font-weight: 700; }
     .meta { color: #666; font-size: .875rem; }
     pre { white-space: pre-wrap; background: #f6f6f6; padding: .75rem; }
     label { display: block; margin-top: .75rem; font-weight: 600; }
@@ -17,4 +19,4 @@
   </style>
 </head>
 <body>
-<nav><a href="/notes">Notes</a></nav>
+<nav><a href="/tasks">Tasks</a><a href="/notes">Notes</a></nav>

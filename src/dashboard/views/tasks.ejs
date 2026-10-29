@@ -1,0 +1,30 @@
+<%- include("header", { title: "Tasks" }) %>
+<h1>Tasks</h1>
+<p class="tabs">
+  <a href="/tasks"<% if (tab === "open") { %> aria-current="page"<% } %>>Open</a>
+  <a href="/tasks?tab=done"<% if (tab === "done") { %> aria-current="page"<% } %>>Done</a>
+</p>
+<% if (tasks.length === 0) { %>
+  <p>No <%= tab %> Tasks.</p>
+<% } else { %>
+  <ul class="tasks">
+  <% for (const task of tasks) { %>
+    <li>
+      <a href="/tasks/<%= task._id %>"><strong><%= task.heading %></strong></a>
+      <div class="meta"><%= due(task.due) ? `Due ${due(task.due)}` : "No due date" %></div>
+      <pre><%= task.description %></pre>
+      <details>
+        <summary>Original Transcript</summary>
+        <pre><%= task.transcript %></pre>
+      </details>
+      <% if (task.status === "open") { %>
+        <form class="inline" method="post" action="/tasks/<%= task._id %>/done"><button type="submit">Mark done</button></form>
+      <% } else { %>
+        <form class="inline" method="post" action="/tasks/<%= task._id %>/reopen"><button type="submit">Reopen</button></form>
+      <% } %>
+      <a href="/tasks/<%= task._id %>">Edit</a>
+    </li>
+  <% } %>
+  </ul>
+<% } %>
+<%- include("footer") %>
