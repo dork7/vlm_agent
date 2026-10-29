@@ -29,6 +29,12 @@ export function instantToWallClock(instant: Date, timezone: string): { date: str
   return { date: `${p.year}-${pad(p.month)}-${pad(p.day)}`, time: `${pad(p.hour)}:${pad(p.minute)}` };
 }
 
+/** An instant for people, on the clock in `timezone`, e.g. "Thu 29 Oct 2026, 15:00". */
+export function formatInstant(instant: Date, timezone: string): string {
+  const { date, time } = instantToWallClock(instant, timezone);
+  return `${formatDay(date)}, ${time}`;
+}
+
 /** A calendar date ("YYYY-MM-DD") for people, e.g. "Thu 29 Oct 2026". */
 export function formatDay(date: string): string {
   return new Date(`${date}T00:00:00Z`)

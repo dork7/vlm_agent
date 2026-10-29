@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { ObjectId } from "mongodb";
-import type { RunDoc, RunStage } from "../src/core/runs.ts";
+import type { RunDoc, RunStage } from "../src/db.ts";
 import { buildServer } from "../src/server.ts";
 import { hashPassword } from "../src/users.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
@@ -153,6 +153,20 @@ describe("dashboard: observability of Runs", () => {
       expect(text).toContain("classification 880 ms");
       expect(text).toContain("received 3 ms");
       expect(text).toContain("Fallback 20% (1 of 5)");
+    });
+
+    it("counts a message answered through a Clarification once, under the type the answer gave it", async () => {
+      await createUsers();
+      const day = new Date("2026-10-20T10:00:00Z");
+      // The Run that asked takes the type once answered; the answering Run has none.
+      await createRun({ startedAt: day, type: "task" });
+      await createRun({ startedAt: day, type: null, content: "clarification-answer" });
+
+      const text = (await get("/runs/totals")).body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+      expect(text).toContain("Tue 20 Oct 2026 1");
+      expect(text).toContain("Task 1");
+      expect(text).toContain("Note 0");
     });
 
     it("is denied to a User who is not an admin", async () => {

@@ -139,8 +139,30 @@ describe("core: every inbound message is recorded as one Run", () => {
     const runs = await database().runs.find().sort({ startedAt: 1, _id: 1 }).toArray();
     expect(runs).toHaveLength(2);
     expect(runs[0]).toMatchObject({ _id: waiting!._id, status: "succeeded", type: "note" });
-    expect(runs[1]).toMatchObject({ content: "clarification-answer", status: "succeeded", type: "note" });
+    // The type stays with the Run that asked, so the message is counted once.
+    expect(runs[1]).toMatchObject({ content: "clarification-answer", status: "succeeded", type: null });
     expect(runs[1]!.clarificationId?.toHexString()).toBe(asked.clarification!.id);
+  });
+
+  it("records a typed answer to a Clarification as a Clarification answer with no type of its own", async () => {
+    openRouter.script(FIRST, toolCall("ask_clarification", {}));
+    await send({ kind: "text", text: "the supplier thing" }, { clarifyWith: "text" });
+
+    openRouter.script(FIRST, toolCall("save_task", { heading: "Call the supplier", description: "Call them" }));
+    await send({ kind: "text", text: "2" }, { clarifyWith: "text", messageId: "1002" });
+
+    const runs = await database().runs.find().sort({ startedAt: 1, _id: 1 }).toArray();
+    expect(runs).toMatchObject([
+      { content: "text", status: "succeeded", type: "task" },
+      { content: "clarification-answer", status: "succeeded", type: null },
+    ]);
+  });
+
+  it("records a Voice Message over the length limit as refused, not failed", async () => {
+    await send({ kind: "voice", durationSeconds: 301, download: async () => {} });
+
+    const [run] = await database().runs.find().toArray();
+    expect(run).toMatchObject({ status: "refused", type: null, error: null });
   });
 
   it("records a refused sender as a refused Run with no User", async () => {

@@ -32,19 +32,19 @@ describe("dashboard Users portal", () => {
     await server.close();
   });
 
-  /** Sends a typed message to the bot (Seam 1) as a Telegram sender, returning the final result. */
   function core() {
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: ["test/model-a"] });
     return createCore({ database: database(), llm, inventory: unusedInventory, transcriber: unusedTranscriber, defaultTimezone: "UTC" });
   }
 
-  async function botResult(telegramId: string) {
+  /** Sends a typed message to the bot (Seam 1) from this Telegram Channel Identity, returning the final result. */
+  async function resultForChannelIdentity(channelId: string) {
     openRouter.script("test/model-a", toolCall("save_note", { heading: "A thought" }));
     const events: CoreEvent[] = [];
     await core().handleMessage(
       {
-        sender: { channel: "telegram", channelId: telegramId },
-        chatId: telegramId,
+        sender: { channel: "telegram", channelId },
+        chatId: channelId,
         messageId: String(Math.random()),
         content: { kind: "text", text: "Remember a thought" },
         clarifyWith: "buttons",
@@ -166,14 +166,14 @@ describe("dashboard Users portal", () => {
   describe("Channel Identities", () => {
     it("adding a Telegram Channel Identity lets that sender use the bot", async () => {
       const page = await createUser({ username: "sam", password: "sam-pass" });
-      expect(await botResult("555")).toBe("refused");
+      expect(await resultForChannelIdentity("555")).toBe("refused");
 
       const response = await post(`${page}/identities`, { channel: "telegram", channelId: " 555 " });
 
       expect(response.statusCode).toBe(303);
       expect(response.headers.location).toBe(page);
       expect((await get(page)).body).toContain("555");
-      expect(await botResult("555")).toBe("note-saved");
+      expect(await resultForChannelIdentity("555")).toBe("note-saved");
       const sam = await database().users.findOne({ username: "sam" });
       expect(await database().notes.findOne({ ownerId: sam!._id! })).toMatchObject({ heading: "A thought" });
     });
@@ -186,8 +186,8 @@ describe("dashboard Users portal", () => {
       const response = await post(`${page}/identities/remove`, { channel: "telegram", channelId: "555" });
 
       expect(response.statusCode).toBe(303);
-      expect(await botResult("555")).toBe("refused");
-      expect(await botResult("556")).toBe("note-saved");
+      expect(await resultForChannelIdentity("555")).toBe("refused");
+      expect(await resultForChannelIdentity("556")).toBe("note-saved");
     });
 
     it("cannot belong to two Users", async () => {
@@ -198,8 +198,8 @@ describe("dashboard Users portal", () => {
       const response = await post(`${kim}/identities`, { channel: "telegram", channelId: "555" });
 
       expect(response.statusCode).toBe(400);
-      expect((await get(kim)).body).not.toContain("555");
-      await botResult("555");
+      expect((await database().users.findOne({ username: "kim" }))!.channelIdentities).toEqual([]);
+      await resultForChannelIdentity("555");
       const samId = (await database().users.findOne({ username: "sam" }))!._id!;
       expect(await database().notes.countDocuments({ ownerId: samId })).toBe(1);
     });
@@ -232,7 +232,7 @@ describe("dashboard Users portal", () => {
       const response = await post("/users/000000000000000000000000/identities", { channel: "telegram", channelId: "555" });
 
       expect(response.statusCode).toBe(404);
-      expect(await botResult("555")).toBe("refused");
+      expect(await resultForChannelIdentity("555")).toBe("refused");
     });
   });
 
@@ -288,22 +288,22 @@ describe("dashboard Users portal", () => {
     it("makes both dashboard login and bot use fail for them", async () => {
       const page = await createUser({ username: "sam", password: "sam-pass" });
       await post(`${page}/identities`, { channel: "telegram", channelId: "555" });
-      expect(await botResult("555")).toBe("note-saved");
+      expect(await resultForChannelIdentity("555")).toBe("note-saved");
 
       const response = await post(`${page}/delete`);
 
       expect(response.statusCode).toBe(303);
       expect(response.headers.location).toBe("/users");
       expect((await get("/notes", ["sam", "sam-pass"])).statusCode).toBe(401);
-      expect(await botResult("555")).toBe("refused");
+      expect(await resultForChannelIdentity("555")).toBe("refused");
       expect((await get(page)).statusCode).toBe(404);
       expect((await get("/users")).body).not.toContain("sam");
     });
 
-    it("removes their Notes and Tasks, so no Reminder goes out to them afterwards", async () => {
+    it("keeps their Notes and Tasks, but no Reminder goes out to them afterwards", async () => {
       const page = await createUser({ username: "sam", password: "sam-pass" });
       await post(`${page}/identities`, { channel: "telegram", channelId: "555" });
-      await botResult("555");
+      await resultForChannelIdentity("555");
       const sam = (await database().users.findOne({ username: "sam" }))!._id!;
       const at = new Date("2026-10-27T05:30:00Z");
       await database().tasks.insertOne({
@@ -327,8 +327,9 @@ describe("dashboard Users portal", () => {
         reminders.push(reminder);
       });
       expect(reminders).toEqual([]);
-      expect(await database().notes.countDocuments({ ownerId: sam })).toBe(0);
-      expect(await database().tasks.countDocuments({ ownerId: sam })).toBe(0);
+      expect(await database().notes.countDocuments({ ownerId: sam })).toBe(1);
+      // Not claimed either: the scheduler skipped it rather than sending it anywhere.
+      expect(await database().tasks.findOne({ ownerId: sam })).toMatchObject({ heading: "Call the bank", reminderSentAt: null });
     });
 
     it("lets the deleted User's Channel Identity be given to someone else", async () => {

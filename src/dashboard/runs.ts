@@ -1,8 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
-import type { RunStageName, RunType } from "../core/runs.ts";
-import type { Database, UserDoc } from "../db.ts";
-import { formatDay, instantToWallClock } from "../time.ts";
-import { notFound, parseId, render } from "./http.ts";
+import { RUN_STAGES, type Database, type RunStageName, type RunType, type UserDoc } from "../db.ts";
+import { formatDay, formatInstant } from "../time.ts";
+import { adminOnly, notFound, parseId, render } from "./http.ts";
 
 export type RunRoutesOptions = { database: Database; timezoneOf: (user: UserDoc) => string };
 
@@ -19,30 +18,12 @@ const COUNTED_TYPES: Array<[RunType, string]> = [
   ["query", "Query"],
 ];
 
-const STAGE_ORDER: RunStageName[] = [
-  "received",
-  "download",
-  "conversion",
-  "transcription",
-  "classification",
-  "tool-call",
-  "query-answer",
-  "reply",
-];
-
 /** The observability dashboard (ADR 0003): admins only, since Runs show every User's messages. */
 export const runRoutes: FastifyPluginAsync<RunRoutesOptions> = async (app, { database, timezoneOf }) => {
-  app.addHook("onRequest", async (request, reply) => {
-    if (!request.user.isAdmin) {
-      return reply.code(403).type("text/plain").send("Only admins can see Runs.");
-    }
-  });
+  app.addHook("onRequest", adminOnly("see Runs"));
 
   /** When something happened, on the viewer's own clock. */
-  const shownTime = (user: UserDoc) => (instant: Date) => {
-    const { date, time } = instantToWallClock(instant, timezoneOf(user));
-    return `${formatDay(date)}, ${time}`;
-  };
+  const shownTime = (user: UserDoc) => (instant: Date) => formatInstant(instant, timezoneOf(user));
 
   app.get("/runs", async (request, reply) => {
     const runs = await database.runs.find().sort({ startedAt: -1, _id: -1 }).limit(RECENT_RUNS).toArray();
@@ -75,7 +56,7 @@ function share(part: number, whole: number): string {
 }
 
 type RunTotals = {
-  /** The latest days with messages, newest first; `date` is on the viewer's own clock. */
+  /** The latest days with messages, newest first; `date` is on the viewer's own clock. A Clarification answer is not a new message. */
   perDay: Array<{ date: string; count: number }>;
   byType: Partial<Record<RunType, number>>;
   /** Finished Runs (not in progress), and how many of them failed. */
@@ -92,6 +73,7 @@ async function runTotals(database: Database, timezone: string): Promise<RunTotal
   const [perDay, byType, finished, failed, stageTimes, usedModel, fellBack] = await Promise.all([
     runs
       .aggregate<{ _id: string; count: number }>([
+        { $match: { content: { $ne: "clarification-answer" } } },
         { $group: { _id: { $dateToString: { date: "$startedAt", format: "%Y-%m-%d", timezone } }, count: { $sum: 1 } } },
         { $sort: { _id: -1 } },
         { $limit: RECENT_DAYS },
@@ -118,7 +100,7 @@ async function runTotals(database: Database, timezone: string): Promise<RunTotal
     failed,
     averageStageMs: stageTimes
       .map(({ _id, averageMs }) => ({ name: _id, averageMs: Math.round(averageMs) }))
-      .sort((a, b) => STAGE_ORDER.indexOf(a.name) - STAGE_ORDER.indexOf(b.name)),
+      .sort((a, b) => RUN_STAGES.indexOf(a.name) - RUN_STAGES.indexOf(b.name)),
     usedModel,
     fellBack,
   };

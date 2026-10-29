@@ -10,7 +10,7 @@ import {
   type UserDoc,
 } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
-import { AllModelsFailedError, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
+import type { Llm, ModelAttempt } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
@@ -18,8 +18,16 @@ import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
 import { answerQuery } from "./query.ts";
 import { sendDueReminders, type DeliverReminder, type ReminderEvent } from "./reminders.ts";
-import { startRun, type RunRecorder, type RunType } from "./runs.ts";
-import { listTasks } from "./tasks.ts";
+import {
+  errorMessage,
+  recordingEmit,
+  recordingInventory,
+  recordingLlm,
+  recordingTimeStage,
+  startRun,
+  type RunRecorder,
+} from "./runs.ts";
+import { listTasks, setTaskStatus } from "./tasks.ts";
 
 export type { ClarificationOption, DeliverReminder, Due, ReminderEvent };
 
@@ -93,7 +101,7 @@ export type HandledMessage = {
 };
 
 /** What every step of handling one message works with. */
-type Handling = { emit: EmitEvent; handled: HandledMessage; llm: Llm; inventory: InventoryClient; run: RunRecorder };
+type Handling = { emit: EmitEvent; handled: HandledMessage; llm: Llm; inventory: InventoryClient; recorder: RunRecorder };
 
 export type Core = {
   handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
@@ -142,20 +150,20 @@ export function createCore(deps: {
     }
   };
 
-  const handle = async (message: InboundMessage, run: Handling) => {
-    const { emit, handled } = run;
+  const handle = async (message: InboundMessage, handling: Handling) => {
+    const { emit, handled, recorder } = handling;
     const { content } = message;
-    const user = await run.run.stage("received", () => findUserByChannelIdentity(database, message.sender), {
+    const user = await recorder.stage("received", () => findUserByChannelIdentity(database, message.sender), {
       details: () => (content.kind === "voice" ? { durationSeconds: content.durationSeconds } : {}),
     });
-    if (user) run.run.set({ userId: user._id!, username: user.username });
+    if (user) recorder.set({ userId: user._id!, username: user.username });
     if (!user) {
       await emit({ type: "result", result: { kind: "refused" } });
       return;
     }
 
     if (content.kind === "clarification-answer") {
-      await answerClarification(user, content.clarificationId, content.answer, message.messageId, run);
+      await answerClarification(user, content.clarificationId, content.answer, message.messageId, handling);
       return;
     }
     if (message.clarifyWith === "text") {
@@ -172,8 +180,8 @@ export function createCore(deps: {
         // A Voice Message is not an answer either, so it asks again without being fetched.
         const answer = content.kind === "text" ? readClarificationAnswer(content.text) : null;
         const clarificationId = pending._id.toHexString();
-        if (answer === null) await askClarification(clarificationId, "re-asked", run);
-        else await answerClarification(user, clarificationId, answer, message.messageId, run);
+        if (answer === null) await askClarification(clarificationId, "re-asked", handling);
+        else await answerClarification(user, clarificationId, answer, message.messageId, handling);
         return;
       }
     }
@@ -193,12 +201,7 @@ export function createCore(deps: {
       const startedAt = performance.now();
       const durationMs = () => Math.round(performance.now() - startedAt);
       try {
-        transcript = await deps.transcriber.transcribe(content, (name, step) =>
-          run.run.stage(name, step, {
-            details: (value) => (name === "transcription" ? { model, transcriptLength: String(value).length } : {}),
-            detailsOnError: () => (name === "transcription" ? { model } : {}),
-          }),
-        );
+        transcript = await deps.transcriber.transcribe(content, recordingTimeStage(recorder, model));
       } catch (error) {
         console.error("Transcription failed", error);
         handled.transcription = { model, durationMs: durationMs(), error: errorMessage(error) };
@@ -209,13 +212,13 @@ export function createCore(deps: {
     }
 
     const source = { channel: message.sender.channel, chatId: message.chatId, messageId: message.messageId };
-    await fileTranscript({ user, sender: message.sender, source, transcript }, run);
+    await fileTranscript({ user, sender: message.sender, source, transcript }, handling);
   };
 
-  const askClarification = async (clarificationId: string, outcome: "asked" | "re-asked", run: Handling) => {
-    run.handled.clarification = { id: clarificationId, outcome };
-    run.run.set({ clarificationId: new ObjectId(clarificationId) });
-    await run.emit({ type: "clarification-needed", clarificationId, options: CLARIFICATION_OPTIONS });
+  const askClarification = async (clarificationId: string, outcome: "asked" | "re-asked", handling: Handling) => {
+    handling.handled.clarification = { id: clarificationId, outcome };
+    handling.recorder.set({ clarificationId: new ObjectId(clarificationId) });
+    await handling.emit({ type: "clarification-needed", clarificationId, options: CLARIFICATION_OPTIONS });
   };
 
   /**
@@ -227,8 +230,10 @@ export function createCore(deps: {
     clarificationId: string,
     answer: ClarificationOption,
     answeredBy: string,
-    run: Handling,
+    handling: Handling,
   ) => {
+    // Typed or tapped, the message is an answer, so its Run takes no type of its own.
+    handling.recorder.answersClarification();
     const clarification = ObjectId.isValid(clarificationId)
       ? await database.clarifications.findOneAndUpdate(
           { _id: new ObjectId(clarificationId), ownerId: user._id!, status: "pending" },
@@ -240,12 +245,12 @@ export function createCore(deps: {
       console.warn(`Ignored an answer to Clarification ${clarificationId}: not pending for ${user.username}`);
       return;
     }
-    run.handled.clarification = { id: clarificationId, outcome: "answered" };
-    run.run.set({ clarificationId: clarification._id });
-    await run.emit({ type: "processing-started" });
+    handling.handled.clarification = { id: clarificationId, outcome: "answered" };
+    handling.recorder.set({ clarificationId: clarification._id });
+    await handling.emit({ type: "processing-started" });
     let filed = false;
     try {
-      filed = await fileTranscript({ ...clarification, user }, run, answer);
+      filed = await fileTranscript({ ...clarification, user }, handling, answer);
       // The Runs that asked it are no longer waiting.
       if (filed) {
         await database.runs.updateMany(
@@ -266,10 +271,10 @@ export function createCore(deps: {
   /** Classifies the Transcript (as `fixedAs`, when the User has said) and acts on it; false when it failed. */
   const fileTranscript = async (
     message: Pick<ClarificationDoc, "sender" | "source" | "transcript"> & { user: UserDoc },
-    run: Handling,
+    handling: Handling,
     fixedAs?: ClarificationOption,
   ): Promise<boolean> => {
-    const { emit, handled, llm, inventory } = run;
+    const { emit, llm, inventory } = handling;
     const { user, sender, transcript, source } = message;
     const timezone = user.timezone ?? defaultTimezone;
     let classification;
@@ -311,7 +316,7 @@ export function createCore(deps: {
         createdAt: now(),
         answeredAt: null,
       });
-      await askClarification(insertedId.toHexString(), "asked", run);
+      await askClarification(insertedId.toHexString(), "asked", handling);
       return true;
     }
 
@@ -365,10 +370,7 @@ export function createCore(deps: {
     async completeTask(sender, taskId) {
       const user = await findUserByChannelIdentity(database, sender);
       if (!user || !ObjectId.isValid(taskId)) return { kind: "task-not-found" };
-      const task = await database.tasks.findOneAndUpdate(
-        { _id: new ObjectId(taskId), ownerId: user._id! },
-        { $set: { status: "done", updatedAt: now() } },
-      );
+      const task = await setTaskStatus(database, user._id!, new ObjectId(taskId), "done", now);
       if (!task) return { kind: "task-not-found" };
       await refreshMarkdownCopies(user, user.timezone ?? defaultTimezone);
       return { kind: "task-done", heading: task.heading };
@@ -385,91 +387,25 @@ export function createCore(deps: {
       };
       if (!(await claimMessage(message))) return { ...handled, duplicate: true };
       const { sender, chatId, messageId } = message;
-      const run = await startRun(database, { sender, chatId, messageId, content: message.content.kind }, now);
-      handled.runId = run.id.toHexString();
-
-      // The first model call classifies the message; any later ones write a Query's answer from its lookups.
-      let modelCalls = 0;
-      const recordingLlm: Llm = {
-        callTool(request) {
-          return run.stage(
-            modelCalls++ === 0 ? "classification" : "query-answer",
-            async () => {
-              try {
-                const answer = await deps.llm.callTool(request);
-                handled.modelAttempts.push(...answer.attempts);
-                return answer;
-              } catch (error) {
-                if (error instanceof AllModelsFailedError) handled.modelAttempts.push(...error.attempts);
-                throw error;
-              }
-            },
-            {
-              details: (answer) => ({ attempts: answer.attempts }),
-              detailsOnError: (error) => (error instanceof AllModelsFailedError ? { attempts: error.attempts } : {}),
-            },
-          );
-        },
-      };
-      const recordingInventory: InventoryClient = {
-        lookup(lookup) {
-          return run.stage(
-            "tool-call",
-            async () => {
-              const result = await deps.inventory.lookup(lookup);
-              handled.inventoryRequests.push(result.request);
-              return result;
-            },
-            {
-              details: ({ request }) => ({ ...request }),
-              // Not finding an item by its SKU is an answer, not a failure.
-              failure: ({ request }) =>
-                request.status === 200 || request.status === 404 ? null : (request.error ?? `HTTP ${request.status}`),
-            },
-          );
-        },
-      };
-      // Whatever the message comes to settles the Run's status, and sending it is the reply stage.
-      const recordingEmit: EmitEvent = async (event) => {
-        if (event.type === "processing-started") return emit(event);
-        settleRun(run, event);
-        await run.stage("reply", () => emit(event), {
-          details: () => ({ sent: event.type === "result" ? event.result.kind : event.type }),
-        });
-      };
+      const recorder = await startRun(database, { sender, chatId, messageId, content: message.content.kind }, now);
+      handled.runId = recorder.id.toHexString();
       try {
-        await handle(message, { emit: recordingEmit, handled, llm: recordingLlm, inventory: recordingInventory, run });
+        await handle(message, {
+          emit: recordingEmit(recorder, emit),
+          handled,
+          llm: recordingLlm(recorder, deps.llm, handled),
+          inventory: recordingInventory(recorder, deps.inventory, handled),
+          recorder,
+        });
       } catch (error) {
-        run.fail(errorMessage(error));
+        recorder.fail(errorMessage(error));
         throw error;
       } finally {
-        await run.finish();
+        await recorder.finish();
       }
       return handled;
     },
   };
-}
-
-/** The Run's type for each result that completes a message. */
-const RESULT_TYPES: Partial<Record<Result["kind"], RunType>> = {
-  "note-saved": "note",
-  "task-saved": "task",
-  "query-answered": "query",
-  "tasks-listed": "task-list",
-  "command-declined": "command",
-};
-
-function settleRun(run: RunRecorder, event: Exclude<CoreEvent, { type: "processing-started" }>) {
-  if (event.type === "clarification-needed") return run.set({ status: "awaiting-clarification" });
-  const { result } = event;
-  if (result.kind === "refused") return run.set({ status: "refused" });
-  if (result.kind === "error") return run.fail();
-  if (result.kind === "voice-too-long") return run.fail(`Voice Message longer than ${result.maxSeconds} seconds`);
-  run.set({ status: "succeeded", type: RESULT_TYPES[result.kind] ?? null });
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function storedDue(due: Due, timezone: string): TaskDue {

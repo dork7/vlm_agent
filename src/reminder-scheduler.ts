@@ -6,7 +6,7 @@ const EVERY_MINUTE = 60_000;
  * Sends due Reminders now (catching up on any missed while the app was down) and then every minute.
  * A check still running when the next is due is not overlapped. Returns a function that stops it.
  */
-export function startReminderScheduler(core: Core, deliver: DeliverReminder, intervalMs = EVERY_MINUTE): () => void {
+export function startReminderScheduler(core: Core, deliver: DeliverReminder): () => void {
   let running = false;
   const check = async () => {
     if (running) return;
@@ -20,6 +20,6 @@ export function startReminderScheduler(core: Core, deliver: DeliverReminder, int
     }
   };
   void check();
-  const timer = setInterval(check, intervalMs);
+  const timer = setInterval(check, EVERY_MINUTE);
   return () => clearInterval(timer);
 }

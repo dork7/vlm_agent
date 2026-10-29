@@ -63,7 +63,7 @@ _Avoid_: Disambiguation, prompt, follow-up
 ## Observability
 
 **Run**:
-One pass of a single Voice Message through the bot, from arrival to the final reply, including every stage and failure along the way.
+One pass of one inbound message (typed text, Voice Message, or Clarification answer) through the bot, from arrival to the final reply, including every stage and failure along the way.
 _Avoid_: Job, trace, execution, request
 
 ## Inventory

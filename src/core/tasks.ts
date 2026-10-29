@@ -1,4 +1,4 @@
-import { ObjectId } from "mongodb";
+import type { ObjectId } from "mongodb";
 import type { Database, TaskDoc, TaskDue } from "../db.ts";
 import { instantToWallClock, wallClockToInstant } from "../time.ts";
 import type { Due } from "./classify.ts";
@@ -44,14 +44,53 @@ export async function listTasks(
 }
 
 /**
- * Changes a Task's due date and clears its Reminder sent marker, so a new Reminder goes out at the new time.
- * Every due date change (e.g. from the dashboard) goes through here.
+ * Changes a Task's due date and clears its Reminder sent marker and failed tries, so a new Reminder goes out
+ * at the new time. Every due date change (e.g. from the dashboard) goes through here.
  */
-export async function changeTaskDue(database: Database, taskId: string, due: TaskDue): Promise<void> {
+export async function changeTaskDue(database: Database, taskId: ObjectId, due: TaskDue, now: () => Date): Promise<void> {
   await database.tasks.updateOne(
-    { _id: new ObjectId(taskId) },
-    { $set: { due, reminderSentAt: null, updatedAt: new Date() } },
+    { _id: taskId },
+    { $set: { due, reminderSentAt: null, updatedAt: now() }, $unset: { reminderAttempts: "" } },
   );
+}
+
+/**
+ * Marks one of the owner's Tasks done or open again, e.g. from a Reminder's "Done" button or the dashboard.
+ * Returns the Task as it was, or null when the owner has no such Task.
+ */
+export function setTaskStatus(
+  database: Database,
+  ownerId: ObjectId,
+  taskId: ObjectId,
+  status: TaskDoc["status"],
+  now: () => Date,
+): Promise<TaskDoc | null> {
+  return database.tasks.findOneAndUpdate({ _id: taskId, ownerId }, { $set: { status, updatedAt: now() } });
+}
+
+/**
+ * The due date a User typed: a date ("YYYY-MM-DD") with an optional time ("HH:MM") on their own clock,
+ * or neither for no due date. Undefined when it isn't one.
+ */
+export function dueFromForm(date: string, time: string, timezone: string): TaskDue | undefined {
+  if (!date) return time ? undefined : null;
+  if (!isCalendarDate(date)) return undefined;
+  if (!time) return { kind: "date", date };
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return undefined;
+  return { kind: "moment", at: wallClockToInstant(date, time, timezone) };
+}
+
+function isCalendarDate(date: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(date);
+}
+
+export function sameDue(a: TaskDue, b: TaskDue): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind === "date" && b.kind === "date") return a.date === b.date;
+  if (a.kind === "moment" && b.kind === "moment") return a.at.getTime() === b.at.getTime();
+  return false;
 }
 
 /** The wall-clock time at which a date-only Task falls due on its owner's clock. */

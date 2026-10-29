@@ -10,17 +10,13 @@ import {
   setTimezone,
   UserChangeError,
 } from "../users.ts";
-import { badRequest, field, notFound, parseId, render, type Form } from "./http.ts";
+import { adminOnly, badRequest, field, notFound, parseId, render, type Form } from "./http.ts";
 
 export type UsersPortalOptions = { database: Database; defaultTimezone: string };
 
 /** The admin-only Users portal, mounted inside the dashboard so the request already carries its logged-in User. */
 export const usersPortalRoutes: FastifyPluginAsync<UsersPortalOptions> = async (app, { database, defaultTimezone }) => {
-  app.addHook("preHandler", async (request, reply) => {
-    if (!request.user.isAdmin) {
-      return reply.code(403).type("text/plain").send("Only admins can manage Users.");
-    }
-  });
+  app.addHook("onRequest", adminOnly("manage Users"));
 
   /** Runs an admin's change and redirects where it says; null is not found, and a refusal is a 400 that says why. */
   const change = async (reply: FastifyReply, run: () => Promise<string | null>) => {

@@ -1,5 +1,5 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type ObjectId } from "mongodb";
-import type { RunDoc } from "./core/runs.ts";
+import { TRANSCRIPTION_STAGES } from "./transcriber/transcriber.ts";
 
 export type ChannelIdentity = { channel: string; channelId: string };
 
@@ -38,6 +38,8 @@ export type TaskDoc = {
   due: TaskDue;
   status: "open" | "done";
   reminderSentAt: Date | null;
+  /** Failed tries to deliver the Reminder for the current due date; absent means none. Stops at a limit. */
+  reminderAttempts?: number;
   channelIdentity: ChannelIdentity;
   transcript: string;
   source: { channel: string; chatId: string; messageId: string };
@@ -70,6 +72,61 @@ export type ClarificationDoc = {
   answeredBy: string | null;
   createdAt: Date;
   answeredAt: Date | null;
+};
+
+/** The stages of a Run (ADR 0003), in the order they can happen. "query-answer" is a model call after a Query's lookups. */
+export const RUN_STAGES = [
+  "received",
+  ...TRANSCRIPTION_STAGES,
+  "classification",
+  "tool-call",
+  "query-answer",
+  "reply",
+] as const;
+
+export type RunStageName = (typeof RUN_STAGES)[number];
+
+export type RunStage = {
+  name: RunStageName;
+  startedAt: Date;
+  durationMs: number;
+  outcome: "succeeded" | "failed";
+  /** Why the stage failed. */
+  error?: string;
+  /** What the stage did, e.g. every model attempt, or a tool call's endpoint and HTTP status. */
+  details: Record<string, unknown>;
+};
+
+export type RunStatus = "in-progress" | "succeeded" | "failed" | "awaiting-clarification" | "refused";
+
+/** What the message turned out to be. */
+export type RunType = "note" | "task" | "query" | "task-list" | "command";
+
+/** One pass of one inbound message through the bot, from arrival to the final reply. */
+export type RunDoc = {
+  _id?: ObjectId;
+  sender: ChannelIdentity;
+  chatId: string;
+  messageId: string;
+  /** What arrived; a typed reply that answers a Clarification is a "clarification-answer". */
+  content: "text" | "voice" | "clarification-answer";
+  /** The User who sent it; null when the sender was refused. */
+  userId: ObjectId | null;
+  username: string | null;
+  status: RunStatus;
+  /**
+   * What the message turned out to be. A Clarification answer has none: the Run that asked the
+   * Clarification takes the type, so the message is counted once.
+   */
+  type: RunType | null;
+  /** The Clarification this Run asked, asked again, or answered. */
+  clarificationId: ObjectId | null;
+  stages: RunStage[];
+  /** For a failed Run: what went wrong, and in which stage. */
+  error: { stage: RunStageName | null; message: string } | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  durationMs: number | null;
 };
 
 export type Database = {

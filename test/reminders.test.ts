@@ -1,6 +1,7 @@
-import type { ObjectId } from "mongodb";
+import { ObjectId } from "mongodb";
 import { describe, expect, it } from "vitest";
 import { createCore, type ReminderEvent } from "../src/core/core.ts";
+import { deliverByChannel } from "../src/core/reminders.ts";
 import { changeTaskDue } from "../src/core/tasks.ts";
 import type { TaskDoc, TaskDue } from "../src/db.ts";
 import { createOpenRouter } from "../src/llm/openrouter.ts";
@@ -147,7 +148,7 @@ describe("core: Reminders when Tasks fall due", () => {
     expect(await remindAsOf("2026-10-29T11:00:30Z")).toHaveLength(1);
 
     // Moved to Friday 30 October, date only: due at 09:00 Dubai time, 05:00 UTC.
-    await changeTaskDue(database(), taskId, { kind: "date", date: "2026-10-30" });
+    await changeTaskDue(database(), new ObjectId(taskId), { kind: "date", date: "2026-10-30" }, () => new Date("2026-10-29T12:00:00Z"));
 
     expect(await remindAsOf("2026-10-30T04:59:00Z")).toEqual([]);
     expect(await remindAsOf("2026-10-30T05:00:00Z")).toEqual([
@@ -175,6 +176,73 @@ describe("core: Reminders when Tasks fall due", () => {
 
     expect(delivered).toEqual(["Send the invoice"]);
     expect((await remindAsOf("2026-10-29T11:01:30Z")).map((reminder) => reminder.heading)).toEqual(["Call the supplier"]);
+  });
+
+  it("gives up on a Reminder after 5 failed deliveries, keeping the count on the Task", async () => {
+    const owner = await user("owner", "42", "Asia/Dubai");
+    await saveTask(owner, "Call the supplier", { kind: "moment", at: new Date("2026-10-29T11:00:00Z") });
+    let tries = 0;
+    const failing = async () => {
+      tries++;
+      throw new Error("Telegram is unreachable");
+    };
+
+    for (let minute = 1; minute <= 7; minute++) {
+      await core().sendDueReminders(new Date(`2026-10-29T11:0${minute}:00Z`), failing);
+    }
+
+    expect(tries).toBe(5);
+    expect(await database().tasks.findOne({})).toMatchObject({ reminderAttempts: 5, reminderSentAt: null });
+  });
+
+  it("tries again from the start after the due date of a Task it gave up on is changed", async () => {
+    const owner = await user("owner", "42", "Asia/Dubai");
+    const taskId = await saveTask(owner, "Call the supplier", { kind: "moment", at: new Date("2026-10-29T11:00:00Z") });
+    for (let minute = 1; minute <= 5; minute++) {
+      await core().sendDueReminders(new Date(`2026-10-29T11:0${minute}:00Z`), async () => {
+        throw new Error("Telegram is unreachable");
+      });
+    }
+
+    await changeTaskDue(database(), new ObjectId(taskId), { kind: "date", date: "2026-10-30" }, () => new Date());
+
+    expect((await remindAsOf("2026-10-30T05:00:00Z")).map((reminder) => reminder.heading)).toEqual(["Call the supplier"]);
+  });
+
+  it("sends no Reminder to a Channel Identity the owner no longer has", async () => {
+    const owner = await user("owner", "42", "Asia/Dubai");
+    await saveTask(owner, "Call the supplier", { kind: "moment", at: new Date("2026-10-29T11:00:00Z") });
+    await database().users.updateOne({ _id: owner }, { $set: { channelIdentities: [{ channel: "telegram", channelId: "43" }] } });
+
+    expect(await remindAsOf("2026-10-29T11:00:30Z")).toEqual([]);
+  });
+
+  it("sends no Reminder for a Task whose owner no longer exists", async () => {
+    const owner = await user("owner", "42", "Asia/Dubai");
+    await saveTask(owner, "Call the supplier", { kind: "moment", at: new Date("2026-10-29T11:00:00Z") });
+    await database().users.deleteOne({ _id: owner });
+
+    expect(await remindAsOf("2026-10-29T11:00:30Z")).toEqual([]);
+  });
+
+  it("counts a Reminder for a Channel with no adapter as not delivered", async () => {
+    const telegram: ReminderEvent[] = [];
+    const deliver = deliverByChannel({
+      telegram: async (reminder) => {
+        telegram.push(reminder);
+      },
+    });
+    const reminder = (channel: string): ReminderEvent => ({
+      type: "reminder",
+      to: { channel, channelId: "42" },
+      taskId: "6720a1b2c3d4e5f6a7b8c9d0",
+      heading: "Call the supplier",
+      due: null,
+    });
+
+    await deliver(reminder("telegram"));
+    await expect(deliver(reminder("whatsapp"))).rejects.toThrow(/whatsapp/);
+    expect(telegram).toHaveLength(1);
   });
 
   it("marks the reminded Task done when its owner answers the Reminder with Done", async () => {
