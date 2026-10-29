@@ -23,6 +23,7 @@ async function main() {
     database,
     llm: createOpenRouter(config.openRouter),
     defaultTimezone: config.defaultTimezone,
+    markdownDir: config.markdownDir,
   });
   const bot = createTelegramBot(config.telegram.botToken, core);
   try {

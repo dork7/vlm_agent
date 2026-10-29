@@ -43,6 +43,11 @@ describe("startup configuration", () => {
     expect(loadConfig({ ...completeEnv, DEFAULT_TIMEZONE: "Asia/Dubai" }).defaultTimezone).toBe("Asia/Dubai");
   });
 
+  it("defaults the Markdown folder to ./markdown", () => {
+    expect(loadConfig(completeEnv).markdownDir).toBe("./markdown");
+    expect(loadConfig({ ...completeEnv, MARKDOWN_DIR: "/tmp/vault" }).markdownDir).toBe("/tmp/vault");
+  });
+
   it("reads a complete environment", () => {
     const config = loadConfig(completeEnv);
 

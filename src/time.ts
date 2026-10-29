@@ -29,6 +29,13 @@ export function instantToWallClock(instant: Date, timezone: string): { date: str
   return { date: `${p.year}-${pad(p.month)}-${pad(p.day)}`, time: `${pad(p.hour)}:${pad(p.minute)}` };
 }
 
+/** A calendar date ("YYYY-MM-DD") for people, e.g. "Thu 29 Oct 2026". */
+export function formatDay(date: string): string {
+  return new Date(`${date}T00:00:00Z`)
+    .toLocaleDateString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short", year: "numeric" })
+    .replace(",", "");
+}
+
 export function isValidTimezone(timezone: string): boolean {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: timezone });

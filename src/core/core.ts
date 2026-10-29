@@ -1,9 +1,10 @@
-import type { ObjectId } from "mongodb";
-import type { ChannelIdentity, Database, TaskDoc, TaskDue } from "../db.ts";
+import type { ChannelIdentity, Database, TaskDoc, TaskDue, UserDoc } from "../db.ts";
 import type { Llm } from "../llm/openrouter.ts";
 import { findUserByChannelIdentity } from "../users.ts";
-import { instantToWallClock, todayIn, wallClockToInstant } from "../time.ts";
+import { todayIn, wallClockToInstant } from "../time.ts";
 import { classify, type Due } from "./classify.ts";
+import { writeMarkdownCopies } from "./markdown.ts";
+import { listTasks } from "./tasks.ts";
 
 export type { Due };
 
@@ -26,9 +27,6 @@ export type Result =
 /** A Task as shown to its owner; `due` is on the owner's own clock. */
 export type ListedTask = { heading: string; due: Due; status: TaskDoc["status"] };
 
-/** The most Tasks one reply lists, so it fits in a single Channel message. */
-const LISTED_TASKS_LIMIT = 30;
-
 export type CoreEvent = { type: "processing-started" } | { type: "result"; result: Result };
 
 export type EmitEvent = (event: CoreEvent) => Promise<void>;
@@ -41,9 +39,20 @@ export function createCore(deps: {
   database: Database;
   llm: Llm;
   defaultTimezone: string;
+  /** Folder for each User's read-only Markdown copies of their Tasks and Notes; none are written when absent. */
+  markdownDir?: string;
   now?: () => Date;
 }): Core {
-  const { database, llm, defaultTimezone, now = () => new Date() } = deps;
+  const { database, llm, defaultTimezone, markdownDir, now = () => new Date() } = deps;
+
+  const refreshMarkdownCopies = async (user: UserDoc, timezone: string) => {
+    if (markdownDir === undefined) return;
+    try {
+      await writeMarkdownCopies(database, user, markdownDir, timezone);
+    } catch (error) {
+      console.error(`Failed to write Markdown copies for ${user.username}`, error);
+    }
+  };
 
   return {
     async handleMessage(message, emit) {
@@ -88,6 +97,7 @@ export function createCore(deps: {
           createdAt: savedAt,
           updatedAt: savedAt,
         });
+        await refreshMarkdownCopies(user, timezone);
         await emit({ type: "result", result: { kind: "note-saved", heading: classification.heading } });
         return;
       }
@@ -105,6 +115,7 @@ export function createCore(deps: {
         createdAt: savedAt,
         updatedAt: savedAt,
       });
+      await refreshMarkdownCopies(user, timezone);
       await emit({
         type: "result",
         result: { kind: "task-saved", heading: classification.heading, due: classification.due },
@@ -117,41 +128,4 @@ function storedDue(due: Due, timezone: string): TaskDue {
   if (due === null) return null;
   if (due.time === undefined) return { kind: "date", date: due.date };
   return { kind: "moment", at: wallClockToInstant(due.date, due.time, timezone) };
-}
-
-/** The owner's Tasks: open ones soonest due first (undated after), then done ones. */
-async function listTasks(
-  database: Database,
-  ownerId: ObjectId,
-  timezone: string,
-): Promise<{ tasks: ListedTask[]; more: number }> {
-  const tasks = await database.tasks.find({ ownerId }).toArray();
-  // A date-only Task counts as due at 09:00 that day, the same moment its Reminder will go out.
-  const dueAt = (due: TaskDue) =>
-    due === null
-      ? Infinity
-      : due.kind === "moment"
-        ? due.at.getTime()
-        : wallClockToInstant(due.date, "09:00", timezone).getTime();
-  const sorted = tasks.toSorted(
-    (a, b) =>
-      Number(a.status === "done") - Number(b.status === "done") ||
-      dueAt(a.due) - dueAt(b.due) ||
-      a.createdAt.getTime() - b.createdAt.getTime(),
-  );
-
-  return {
-    tasks: sorted.slice(0, LISTED_TASKS_LIMIT).map((task) => ({
-      heading: task.heading,
-      due: shownDue(task.due, timezone),
-      status: task.status,
-    })),
-    more: Math.max(0, sorted.length - LISTED_TASKS_LIMIT),
-  };
-}
-
-function shownDue(due: TaskDue, timezone: string): Due {
-  if (due === null) return null;
-  if (due.kind === "date") return { date: due.date };
-  return instantToWallClock(due.at, timezone);
 }

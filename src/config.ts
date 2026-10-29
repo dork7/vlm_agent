@@ -3,6 +3,7 @@ import { isValidTimezone } from "./time.ts";
 export type Config = {
   port: number;
   defaultTimezone: string;
+  markdownDir: string;
   telegram: { botToken: string };
   mongo: { uri: string; dbName: string };
   openRouter: { apiKey: string; baseUrl: string; models: string[] };
@@ -53,6 +54,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   return {
     port,
     defaultTimezone,
+    markdownDir: value("MARKDOWN_DIR") ?? "./markdown",
     telegram: { botToken: required("TELEGRAM_BOT_TOKEN") },
     mongo: { uri: required("MONGODB_URI"), dbName: value("MONGODB_DB") ?? "voice_notes_bot" },
     openRouter: {

@@ -1,5 +1,6 @@
 import { Bot, type Context } from "grammy";
 import type { Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
+import { formatDay } from "../time.ts";
 
 const PROCESSING = "processing…";
 const REFUSAL = "Sorry, you're not allowed to use this bot. Please ask its owner for access.";
@@ -67,14 +68,7 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
 /** E.g. " (due Thu 29 Oct 2026, 15:00)", or "" when there is no due date. */
 function formatDue(due: Due): string {
   if (due === null) return "";
-  const day = new Date(`${due.date}T00:00:00Z`).toLocaleDateString("en-GB", {
-    timeZone: "UTC",
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-  return ` (due ${day.replace(",", "")}${due.time ? `, ${due.time}` : ""})`;
+  return ` (due ${formatDay(due.date)}${due.time ? `, ${due.time}` : ""})`;
 }
 
 function formatTaskList(tasks: ListedTask[], more: number): string {
