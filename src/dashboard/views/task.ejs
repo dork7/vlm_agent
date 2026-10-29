@@ -1,0 +1,31 @@
+<%- include("header", { title: task.heading }) %>
+<p><a href="/tasks<%= task.status === "done" ? "?tab=done" : "" %>">&larr; All Tasks</a></p>
+<h1><%= task.heading %></h1>
+<p class="meta"><%= task.status === "done" ? "Done" : "Open" %> · <%= shownDue ? `Due ${shownDue}` : "No due date" %></p>
+<pre><%= task.description %></pre>
+
+<h2>Original Transcript</h2>
+<pre><%= task.transcript %></pre>
+
+<h2>Edit</h2>
+<form method="post" action="/tasks/<%= task._id %>">
+  <label for="heading">Heading</label>
+  <input type="text" id="heading" name="heading" value="<%= task.heading %>" required>
+  <label for="description">Description</label>
+  <textarea id="description" name="description" rows="4"><%= task.description %></textarea>
+  <label for="due_date">Due date</label>
+  <input type="date" id="due_date" name="due_date" value="<%= due ? due.date : "" %>">
+  <label for="due_time">Due time (optional)</label>
+  <input type="time" id="due_time" name="due_time" value="<%= due && due.time ? due.time : "" %>">
+  <p><button type="submit">Save</button></p>
+</form>
+
+<% if (task.status === "open") { %>
+  <form method="post" action="/tasks/<%= task._id %>/done"><button type="submit">Mark done</button></form>
+<% } else { %>
+  <form method="post" action="/tasks/<%= task._id %>/reopen"><button type="submit">Reopen</button></form>
+<% } %>
+<form method="post" action="/tasks/<%= task._id %>/delete" onsubmit="return confirm('Delete this Task?')">
+  <button type="submit">Delete Task</button>
+</form>
+<%- include("footer") %>

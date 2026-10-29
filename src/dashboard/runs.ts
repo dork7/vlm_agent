@@ -1,9 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
-import { ObjectId } from "mongodb";
 import type { RunStageName, RunType } from "../core/runs.ts";
 import type { Database, UserDoc } from "../db.ts";
 import { formatDay, instantToWallClock } from "../time.ts";
-import { notFound, render } from "./render.ts";
+import { notFound, parseId, render } from "./http.ts";
 
 export type RunRoutesOptions = { database: Database; timezoneOf: (user: UserDoc) => string };
 
@@ -57,8 +56,8 @@ export const runRoutes: FastifyPluginAsync<RunRoutesOptions> = async (app, { dat
   });
 
   app.get<{ Params: { id: string } }>("/runs/:id", async (request, reply) => {
-    const { id } = request.params;
-    const run = ObjectId.isValid(id) && id.length === 24 ? await database.runs.findOne({ _id: new ObjectId(id) }) : null;
+    const id = parseId(request.params.id);
+    const run = id ? await database.runs.findOne({ _id: id }) : null;
     if (!run) return notFound(reply);
     return render(reply, "run", { run, shown: shownTime(request.user), duration: formatDuration });
   });

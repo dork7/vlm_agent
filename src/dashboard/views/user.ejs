@@ -1,0 +1,48 @@
+<%- include("header", { title: user.username }) %>
+<p><a href="/users">&larr; All Users</a></p>
+<h1><%= user.username %><% if (user.isAdmin) { %> <span class="meta">(admin)</span><% } %></h1>
+
+<h2>Channel Identities</h2>
+<% if (user.channelIdentities.length === 0) { %>
+  <p>None yet, so this User cannot use the bot.</p>
+<% } else { %>
+  <ul>
+  <% for (const identity of user.channelIdentities) { %>
+    <li>
+      <%= identity.channel %> <code><%= identity.channelId %></code>
+      <form class="inline" method="post" action="/users/<%= user._id %>/identities/remove">
+        <input type="hidden" name="channel" value="<%= identity.channel %>">
+        <input type="hidden" name="channelId" value="<%= identity.channelId %>">
+        <button type="submit">Remove</button>
+      </form>
+    </li>
+  <% } %>
+  </ul>
+<% } %>
+<form method="post" action="/users/<%= user._id %>/identities">
+  <label for="channel">Channel</label>
+  <select id="channel" name="channel"><option value="telegram">Telegram</option></select>
+  <label for="channelId">Channel ID (Telegram user ID)</label>
+  <input type="text" id="channelId" name="channelId" required>
+  <p><button type="submit">Add Channel Identity</button></p>
+</form>
+
+<h2>Timezone</h2>
+<form method="post" action="/users/<%= user._id %>/timezone">
+  <label for="timezone">IANA timezone, such as Asia/Dubai; leave empty for the default (<%= defaultTimezone %>)</label>
+  <input type="text" id="timezone" name="timezone" value="<%= user.timezone ?? "" %>">
+  <p><button type="submit">Set timezone</button></p>
+</form>
+
+<h2>Reset password</h2>
+<form method="post" action="/users/<%= user._id %>/password">
+  <label for="password">New password</label>
+  <input type="password" id="password" name="password" required autocomplete="new-password">
+  <p><button type="submit">Reset password</button></p>
+</form>
+
+<h2>Delete</h2>
+<form method="post" action="/users/<%= user._id %>/delete" onsubmit="return confirm('Delete this User and all their Notes and Tasks?')">
+  <button type="submit">Delete User</button>
+</form>
+<%- include("footer") %>
