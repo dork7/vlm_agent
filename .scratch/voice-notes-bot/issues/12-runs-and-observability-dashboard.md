@@ -23,3 +23,11 @@
 - `render` in `src/dashboard/http.ts` now passes `viewer` to every view. Admins see "Runs" and "Users" links in the nav. Fixed an existing bug: `render` used EJS `async: true` while views call `include` without `await`, so the shared header rendered as `[object Promise]`.
 - Tests: `test/runs.test.ts` (Seam 1) and `test/dashboard-runs.test.ts` (Seam 2). `test/query.test.ts` now allows the `runs` collection and checks that it holds no item data.
 - Not checked by hand: the pages in a browser against real Runs.
+- Code review fixes:
+  - An answered Clarification is no longer counted twice. The answering Run (tapped or typed) is recorded with `content: "clarification-answer"` and no type, and the Run that asked keeps the type. Messages per day leave out Clarification answers.
+  - A Voice Message over 5 minutes is now a `refused` Run, not a failed one, so it doesn't count toward the failure rate.
+  - `RunDoc` and its types moved back into `src/db.ts`, with `RUN_STAGES` as the single stage order. The transcription stages come from `TRANSCRIPTION_STAGES` in the Transcriber.
+  - Run settling and the recording wrappers moved from `core.ts` into `src/core/runs.ts` (`recorder.settle`, `recordingLlm`, `recordingInventory`, `recordingEmit`, `recordingTimeStage`). The unused `RunRecorder.has` was removed, and `Handling.run` was renamed to `recorder`.
+  - The dashboards share `formatInstant` from `src/time.ts`.
+  - OpenRouter's raw `usage` shape is now one `ReportedUsage` type.
+  - GLOSSARY "Run" now covers typed text, Voice Messages and Clarification answers.

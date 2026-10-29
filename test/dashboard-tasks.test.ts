@@ -51,6 +51,8 @@ describe("dashboard Tasks page", () => {
     task: { heading: string; description?: string; transcript?: string; due?: TaskDue; status?: "open" | "done" },
   ) {
     const at = new Date((clock += 60_000));
+    // Saved from one of the owner's Channel Identities, as a Task message would be.
+    const owner = await database().users.findOne({ _id: ownerId });
     const { insertedId } = await database().tasks.insertOne({
       ownerId,
       heading: task.heading,
@@ -58,9 +60,9 @@ describe("dashboard Tasks page", () => {
       due: task.due ?? null,
       status: task.status ?? "open",
       reminderSentAt: null,
-      channelIdentity: { channel: "telegram", channelId: "42" },
+      channelIdentity: owner!.channelIdentities[0]!,
       transcript: task.transcript ?? `transcript of ${task.heading}`,
-      source: { channel: "telegram", chatId: "42", messageId: String(clock) },
+      source: { channel: "telegram", chatId: owner!.channelIdentities[0]!.channelId, messageId: String(clock) },
       createdAt: at,
       updatedAt: at,
     });

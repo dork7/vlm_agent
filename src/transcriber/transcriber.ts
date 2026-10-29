@@ -11,8 +11,13 @@ export type AudioSource = {
   download(toPath: string): Promise<void>;
 };
 
+/** The steps of transcribing, in order; each is timed as a stage of the Run. */
+export const TRANSCRIPTION_STAGES = ["download", "conversion", "transcription"] as const;
+
+export type TranscriptionStage = (typeof TRANSCRIPTION_STAGES)[number];
+
 /** Times one step of transcribing as a stage of the Run; a step that throws fails its stage. */
-export type TimeStage = <T>(stage: "download" | "conversion" | "transcription", step: () => Promise<T>) => Promise<T>;
+export type TimeStage = <T>(stage: TranscriptionStage, step: () => Promise<T>) => Promise<T>;
 
 export type Transcriber = {
   /** The speech-to-text model used, for the Run record. */

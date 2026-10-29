@@ -116,19 +116,13 @@ export async function setTimezone(database: Database, userId: ObjectId, timezone
 }
 
 /**
- * Deletes the User with their Notes, Tasks and Clarifications, so they lose the bot and the dashboard
- * and no Reminder goes out for them. Returns false when there is no such User.
+ * Deletes the User, so they lose access to both the bot and the dashboard. Their Notes, Tasks and
+ * Clarifications are kept; no Reminder goes out for a Task whose owner no longer exists.
+ * Returns false when there is no such User.
  */
 export async function deleteUser(database: Database, userId: ObjectId): Promise<boolean> {
-  // The User goes first, so access ends even if removing what they owned fails part-way.
   const { deletedCount } = await database.users.deleteOne({ _id: userId });
-  if (deletedCount === 0) return false;
-  await Promise.all([
-    database.notes.deleteMany({ ownerId: userId }),
-    database.tasks.deleteMany({ ownerId: userId }),
-    database.clarifications.deleteMany({ ownerId: userId }),
-  ]);
-  return true;
+  return deletedCount > 0;
 }
 
 function assertTimezone(timezone: string): void {

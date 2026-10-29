@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { ConfigError, loadConfig } from "./config.ts";
 import { createCore } from "./core/core.ts";
+import { deliverByChannel } from "./core/reminders.ts";
 import { connectDatabase } from "./db.ts";
 import { createInventoryClient } from "./inventory/client.ts";
 import { loadSeedItems } from "./inventory/items.ts";
@@ -57,10 +58,10 @@ async function main() {
   });
 
   // Each Channel's adapter renders the Reminders addressed to it; only Telegram exists so far.
-  const stopReminders = startReminderScheduler(core, async (reminder) => {
-    if (reminder.to.channel === "telegram") return sendTelegramReminder(bot, reminder);
-    console.warn(`No adapter for Channel ${reminder.to.channel}; Reminder for Task ${reminder.taskId} not sent`);
-  });
+  const stopReminders = startReminderScheduler(
+    core,
+    deliverByChannel({ telegram: (reminder) => sendTelegramReminder(bot, reminder) }),
+  );
 
   const shutdown = async () => {
     stopReminders();

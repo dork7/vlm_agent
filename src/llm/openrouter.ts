@@ -30,6 +30,9 @@ export type ModelAttempt = (
 /** What OpenRouter reported a response cost. */
 type Usage = { tokens?: TokenUsage; cost?: number };
 
+/** OpenRouter's `usage` field, as it arrives: any of it may be missing or not a number. */
+type ReportedUsage = { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown; cost?: unknown };
+
 export type Llm = {
   /**
    * Asks each model in turn to answer by calling exactly one of the given tools, until one gives an
@@ -71,7 +74,7 @@ export function createOpenRouter(config: { apiKey: string; baseUrl: string; mode
 
     const body = (await response.json()) as {
       choices?: Array<{ message?: { tool_calls?: Array<{ id?: string; function?: ToolCall }> } }>;
-      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown; cost?: unknown };
+      usage?: ReportedUsage;
     };
     Object.assign(usage, readUsage(body.usage));
     const made = body.choices?.[0]?.message?.tool_calls?.[0];
@@ -100,9 +103,7 @@ export function createOpenRouter(config: { apiKey: string; baseUrl: string; mode
   };
 }
 
-function readUsage(
-  usage: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown; cost?: unknown } | undefined,
-): Usage {
+function readUsage(usage: ReportedUsage | undefined): Usage {
   if (!usage) return {};
   const { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total, cost } = usage;
   return {

@@ -22,7 +22,7 @@
 <form method="post" action="/users/<%= user._id %>/identities">
   <label for="channel">Channel</label>
   <select id="channel" name="channel"><option value="telegram">Telegram</option></select>
-  <label for="channelId">Channel ID (Telegram user ID)</label>
+  <label for="channelId">Channel Identity (the ID the Channel gives this User)</label>
   <input type="text" id="channelId" name="channelId" required>
   <p><button type="submit">Add Channel Identity</button></p>
 </form>
@@ -42,7 +42,7 @@
 </form>
 
 <h2>Delete</h2>
-<form method="post" action="/users/<%= user._id %>/delete" onsubmit="return confirm('Delete this User and all their Notes and Tasks?')">
+<form method="post" action="/users/<%= user._id %>/delete" onsubmit="return confirm('Delete this User? They lose access to the bot and the dashboard; their Notes and Tasks are kept.')">
   <button type="submit">Delete User</button>
 </form>
 <%- include("footer") %>
