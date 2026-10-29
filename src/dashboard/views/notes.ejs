@@ -1,0 +1,20 @@
+<%- include("header", { title: "Notes" }) %>
+<h1>Notes</h1>
+<form method="get" action="/notes" role="search">
+  <input type="search" name="q" value="<%= search %>" placeholder="Search Headings and text" aria-label="Search Notes">
+  <button type="submit">Search</button>
+  <% if (search) { %><a href="/notes">Clear</a><% } %>
+</form>
+<% if (notes.length === 0) { %>
+  <p><%= search ? "No Notes match your search." : "No Notes yet." %></p>
+<% } else { %>
+  <ul class="notes">
+  <% for (const note of notes) { %>
+    <li>
+      <a href="/notes/<%= note._id %>"><%= note.heading %></a>
+      <div class="meta"><%= saved(note.createdAt) %></div>
+    </li>
+  <% } %>
+  </ul>
+<% } %>
+<%- include("footer") %>
