@@ -10,7 +10,8 @@
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "start": "tsx --env-file-if-exists=.env src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:slow": "SLOW_TESTS=1 vitest run test/transcriber.slow.test.ts"
   },
   "dependencies": {
     "fastify": "^5.12.7",

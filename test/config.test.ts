@@ -62,6 +62,17 @@ describe("startup configuration", () => {
     );
   });
 
+  it("defaults the Transcriber to small.en in ./models and the programs on the PATH", () => {
+    expect(loadConfig(completeEnv).transcriber).toEqual({
+      ffmpegPath: "ffmpeg",
+      whisperPath: "whisper-cli",
+      modelPath: "./models/ggml-small.en.bin",
+    });
+    expect(loadConfig({ ...completeEnv, WHISPER_MODEL_PATH: "/opt/ggml-base.en.bin" }).transcriber.modelPath).toBe(
+      "/opt/ggml-base.en.bin",
+    );
+  });
+
   it("reads a complete environment", () => {
     const config = loadConfig(completeEnv);
 

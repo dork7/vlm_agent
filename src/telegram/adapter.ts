@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { Bot, type Context } from "grammy";
 import type { Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
 import { formatDay } from "../time.ts";
@@ -5,9 +6,11 @@ import { formatDay } from "../time.ts";
 const PROCESSING = "processing…";
 const REFUSAL = "Sorry, you're not allowed to use this bot. Please ask its owner for access.";
 const FAILURE = "Sorry, I couldn't process that. Please try again.";
+const VOICE_TOO_LONG = (maxSeconds: number) =>
+  `Sorry, that Voice Message is over ${maxSeconds / 60} minutes. Please split it into shorter ones.`;
 const COMMAND_DECLINED = "Sorry, changing Inventory data isn't supported yet. You can ask me about it instead.";
 const GREETING =
-  "Hi! Type a message and I'll save it as a Note or a Task, or look something up in the Inventory. " +
+  "Hi! Send a Voice Message or type, and I'll save it as a Note or a Task, or look something up in the Inventory. " +
   'Ask "show tasks" to see your Tasks.';
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
@@ -18,7 +21,15 @@ export function createTelegramBot(token: string, core: Core): Bot {
   // Other bot commands are not messages to file.
   bot.on("message:text").filter((ctx) => !ctx.entities("bot_command").some((e) => e.offset === 0), (ctx) => {
     // Acknowledge the update straight away and process the message in the background.
-    void handleTextMessage(ctx, core);
+    void handleMessage(ctx, core, { kind: "text", text: ctx.message.text });
+  });
+  bot.on("message:voice", (ctx) => {
+    const { file_id, duration } = ctx.message.voice;
+    void handleMessage(ctx, core, {
+      kind: "voice",
+      durationSeconds: duration,
+      download: (toPath) => downloadFile(ctx, file_id, toPath),
+    });
   });
 
   bot.catch((error) => console.error("Telegram update failed", error.error));
@@ -26,12 +37,16 @@ export function createTelegramBot(token: string, core: Core): Bot {
   return bot;
 }
 
-async function handleTextMessage(ctx: Context & { message: { text: string } }, core: Core) {
+async function handleMessage(
+  ctx: Context & { message: { message_id: number } },
+  core: Core,
+  content: InboundMessage["content"],
+) {
   const message: InboundMessage = {
     sender: { channel: "telegram", channelId: String(ctx.from!.id) },
     chatId: String(ctx.chat!.id),
     messageId: String(ctx.message.message_id),
-    content: { kind: "text", text: ctx.message.text },
+    content,
   };
 
   let processingReplyId: number | undefined;
@@ -57,6 +72,8 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
         return show(event.result.answer);
       case "command-declined":
         return show(COMMAND_DECLINED);
+      case "voice-too-long":
+        return show(VOICE_TOO_LONG(event.result.maxSeconds));
       case "refused":
         return show(REFUSAL);
       case "error":
@@ -70,6 +87,17 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
     console.error("Failed to process Telegram message", error);
     await show(FAILURE).catch((replyError) => console.error("Failed to send failure reply", replyError));
   }
+}
+
+/** Fetches a file the User sent from Telegram's file storage. */
+async function downloadFile(ctx: Context, fileId: string, toPath: string) {
+  const file = await ctx.api.getFile(fileId);
+  if (!file.file_path) throw new Error(`Telegram gave no path for file ${fileId}`);
+  const response = await fetch(`https://api.telegram.org/file/bot${ctx.api.token}/${file.file_path}`, {
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!response.ok) throw new Error(`Telegram file download responded ${response.status}`);
+  await writeFile(toPath, Buffer.from(await response.arrayBuffer()));
 }
 
 /** E.g. " (due Thu 29 Oct 2026, 15:00)", or "" when there is no due date. */

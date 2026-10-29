@@ -9,6 +9,7 @@ import { buildServer } from "../src/server.ts";
 import { ensureFirstAdmin } from "../src/users.ts";
 import { toolCall, useFakeOpenRouter } from "./fakes/fake-openrouter.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
+import { unusedTranscriber } from "./fakes/unused.ts";
 
 const MODEL = "test/model-a";
 const BACKUP = "test/model-b";
@@ -41,6 +42,7 @@ describe("core: a Query about the Inventory", () => {
     const core = createCore({
       database: database(),
       llm: createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [MODEL, BACKUP] }),
+      transcriber: unusedTranscriber,
       inventory: createInventoryClient({ baseUrl: inventoryBaseUrl, apiKey: API_KEY, ...inventory }),
       defaultTimezone: "UTC",
     });

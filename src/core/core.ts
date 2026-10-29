@@ -1,6 +1,7 @@
 import type { ChannelIdentity, Database, TaskDoc, TaskDue, UserDoc } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
 import { AllModelsFailedError, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
+import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
 import { classify, type Due } from "./classify.ts";
@@ -15,8 +16,11 @@ export type InboundMessage = {
   sender: ChannelIdentity;
   chatId: string;
   messageId: string;
-  content: { kind: "text"; text: string };
+  content: { kind: "text"; text: string } | ({ kind: "voice" } & AudioSource);
 };
+
+/** Voice Messages longer than this are refused before anything is downloaded. */
+export const MAX_VOICE_SECONDS = 5 * 60;
 
 export type Result =
   | { kind: "note-saved"; heading: string }
@@ -27,6 +31,8 @@ export type Result =
   | { kind: "query-answered"; answer: string }
   /** A Command: changing Inventory data is not supported yet. */
   | { kind: "command-declined" }
+  /** A Voice Message over the 5-minute limit; the User is asked to split it. */
+  | { kind: "voice-too-long"; maxSeconds: number }
   | { kind: "refused" }
   | { kind: "error" };
 
@@ -38,7 +44,15 @@ export type CoreEvent = { type: "processing-started" } | { type: "result"; resul
 export type EmitEvent = (event: CoreEvent) => Promise<void>;
 
 /** What happened while handling a message, for its Run record (ticket 12). */
-export type HandledMessage = { modelAttempts: ModelAttempt[]; inventoryRequests: InventoryRequest[] };
+export type HandledMessage = {
+  /** Present for a Voice Message that reached the Transcriber, whether or not it worked. */
+  transcription:
+    | { model: string; durationMs: number; transcriptLength: number }
+    | { model: string; durationMs: number; error: string }
+    | null;
+  modelAttempts: ModelAttempt[];
+  inventoryRequests: InventoryRequest[];
+};
 
 export type Core = {
   handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
@@ -48,6 +62,7 @@ export function createCore(deps: {
   database: Database;
   llm: Llm;
   inventory: InventoryClient;
+  transcriber: Transcriber;
   defaultTimezone: string;
   /** Folder for each User's read-only Markdown copies of their Tasks and Notes; none are written when absent. */
   markdownDir?: string;
@@ -64,16 +79,45 @@ export function createCore(deps: {
     }
   };
 
-  const handle = async (message: InboundMessage, emit: EmitEvent, llm: Llm, inventory: InventoryClient) => {
+  const handle = async (
+    message: InboundMessage,
+    emit: EmitEvent,
+    handled: HandledMessage,
+    llm: Llm,
+    inventory: InventoryClient,
+  ) => {
     const user = await findUserByChannelIdentity(database, message.sender);
     if (!user) {
       await emit({ type: "result", result: { kind: "refused" } });
       return;
     }
 
+    const { content } = message;
+    if (content.kind === "voice" && content.durationSeconds > MAX_VOICE_SECONDS) {
+      await emit({ type: "result", result: { kind: "voice-too-long", maxSeconds: MAX_VOICE_SECONDS } });
+      return;
+    }
+
     await emit({ type: "processing-started" });
 
-    const transcript = message.content.text;
+    let transcript;
+    if (content.kind === "text") {
+      transcript = content.text;
+    } else {
+      const { model } = deps.transcriber;
+      const startedAt = performance.now();
+      const durationMs = () => Math.round(performance.now() - startedAt);
+      try {
+        transcript = await deps.transcriber.transcribe(content);
+      } catch (error) {
+        console.error("Transcription failed", error);
+        handled.transcription = { model, durationMs: durationMs(), error: errorMessage(error) };
+        await emit({ type: "result", result: { kind: "error" } });
+        return;
+      }
+      handled.transcription = { model, durationMs: durationMs(), transcriptLength: transcript.length };
+    }
+
     const timezone = user.timezone ?? defaultTimezone;
     let classification;
     try {
@@ -148,8 +192,8 @@ export function createCore(deps: {
 
   return {
     async handleMessage(message, emit) {
-      // Every model attempt and Inventory request made for this message, even on failure.
-      const handled: HandledMessage = { modelAttempts: [], inventoryRequests: [] };
+      // The transcription, and every model attempt and Inventory request, made for this message, even on failure.
+      const handled: HandledMessage = { transcription: null, modelAttempts: [], inventoryRequests: [] };
       const recordingLlm: Llm = {
         async callTool(request) {
           try {
@@ -169,10 +213,14 @@ export function createCore(deps: {
           return result;
         },
       };
-      await handle(message, emit, recordingLlm, recordingInventory);
+      await handle(message, emit, handled, recordingLlm, recordingInventory);
       return handled;
     },
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function storedDue(due: Due, timezone: string): TaskDue {

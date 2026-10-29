@@ -4,7 +4,7 @@ import { createOpenRouter } from "../src/llm/openrouter.ts";
 import { ensureFirstAdmin } from "../src/users.ts";
 import { toolCall, useFakeOpenRouter } from "./fakes/fake-openrouter.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
-import { unusedInventory } from "./fakes/unused-inventory.ts";
+import { unusedInventory, unusedTranscriber } from "./fakes/unused.ts";
 
 const FIRST = "test/first";
 const SECOND = "test/second";
@@ -17,7 +17,7 @@ describe("core: model fallback list", () => {
   async function send(text: string): Promise<{ events: CoreEvent[]; handled: HandledMessage }> {
     await ensureFirstAdmin(database(), { username: "owner", password: "pw", telegramId: "42", timezone: "UTC" });
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [FIRST, SECOND, THIRD] });
-    const core = createCore({ database: database(), llm, inventory: unusedInventory, defaultTimezone: "UTC" });
+    const core = createCore({ database: database(), llm, inventory: unusedInventory, transcriber: unusedTranscriber, defaultTimezone: "UTC" });
     const events: CoreEvent[] = [];
     const handled = await core.handleMessage(
       {

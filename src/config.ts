@@ -9,6 +9,7 @@ export type Config = {
   openRouter: { apiKey: string; baseUrl: string; models: string[] };
   /** The Inventory API the model's tools call over HTTP (ADR 0002), and the key this app's own one accepts. */
   inventory: { baseUrl: string; apiKey: string };
+  transcriber: { ffmpegPath: string; whisperPath: string; modelPath: string };
   firstAdmin: { username: string; password: string; telegramId: string };
 };
 
@@ -68,6 +69,11 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     inventory: {
       baseUrl: value("INVENTORY_BASE_URL") ?? `http://127.0.0.1:${port}/inventory`,
       apiKey: required("INVENTORY_API_KEY"),
+    },
+    transcriber: {
+      ffmpegPath: value("FFMPEG_PATH") ?? "ffmpeg",
+      whisperPath: value("WHISPER_CLI_PATH") ?? "whisper-cli",
+      modelPath: value("WHISPER_MODEL_PATH") ?? "./models/ggml-small.en.bin",
     },
     firstAdmin: {
       username: required("ADMIN_USERNAME"),

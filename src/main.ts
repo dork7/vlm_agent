@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { ConfigError, loadConfig } from "./config.ts";
 import { createCore } from "./core/core.ts";
 import { connectDatabase } from "./db.ts";
@@ -5,6 +6,7 @@ import { createInventoryClient } from "./inventory/client.ts";
 import { loadSeedItems } from "./inventory/items.ts";
 import { createOpenRouter } from "./llm/openrouter.ts";
 import { buildServer } from "./server.ts";
+import { createWhisperTranscriber } from "./transcriber/transcriber.ts";
 import { createTelegramBot } from "./telegram/adapter.ts";
 import { ensureFirstAdmin } from "./users.ts";
 
@@ -17,6 +19,13 @@ async function main() {
     console.error(error.message);
     process.exit(1);
   }
+  if (!existsSync(config.transcriber.modelPath)) {
+    console.error(
+      `No whisper model at WHISPER_MODEL_PATH (${config.transcriber.modelPath}). ` +
+        "Download one as shown in .env.example, or point WHISPER_MODEL_PATH at it.",
+    );
+    process.exit(1);
+  }
 
   const database = await connectDatabase(config.mongo.uri, config.mongo.dbName);
   await ensureFirstAdmin(database, { ...config.firstAdmin, timezone: config.defaultTimezone });
@@ -25,6 +34,7 @@ async function main() {
     database,
     llm: createOpenRouter(config.openRouter),
     inventory: createInventoryClient(config.inventory),
+    transcriber: createWhisperTranscriber(config.transcriber),
     defaultTimezone: config.defaultTimezone,
     markdownDir: config.markdownDir,
   });
