@@ -46,6 +46,7 @@ describe("core: Markdown copies of Tasks and Notes", () => {
         chatId: "chat",
         messageId: String(clock),
         content: { kind: "text", text },
+        clarifyWith: "buttons",
       },
       async (event) => {
         events.push(event);

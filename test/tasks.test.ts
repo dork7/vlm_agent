@@ -23,6 +23,7 @@ describe("core: a message meant as a Task", () => {
       chatId: "chat-42",
       messageId: "2001",
       content: { kind: "text", text },
+      clarifyWith: "buttons",
     };
     const events: CoreEvent[] = [];
     await core.handleMessage(message, async (event) => {

@@ -1,3 +1,4 @@
+import type { ClarificationOption } from "../db.ts";
 import type { ChatMessage, Llm, LlmAnswer, MadeToolCall, Tool } from "../llm/openrouter.ts";
 import { GET_ITEM, type InventoryToolCall, isInventoryToolCall, readInventoryToolCall, SEARCH_ITEMS } from "./query.ts";
 import { optionalString, requiredString, toolArguments } from "./tool-arguments.ts";
@@ -12,7 +13,9 @@ export type Classification =
   /** A Query: the model's first Inventory lookup, and the conversation it came from so it can continue. */
   | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
   /** A Command: a request to change Inventory data, which is not supported yet. */
-  | { kind: "command" };
+  | { kind: "command" }
+  /** The model can't tell whether the message is a Note, Task or Query, so a Clarification is asked. */
+  | { kind: "unclear" };
 
 const HEADING = {
   type: "string",
@@ -96,37 +99,71 @@ const CHANGE_INVENTORY: Tool = {
   },
 };
 
+const ASK_CLARIFICATION: Tool = {
+  type: "function",
+  function: {
+    name: "ask_clarification",
+    description:
+      "Use only when you can't tell whether the message is a Note, a Task or a Query about the Inventory. " +
+      "The person will be asked which it is.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
+/** The tools for each type a Clarification answer can fix the message as. */
+const TOOLS_FOR: Record<ClarificationOption, Tool[]> = {
+  note: [SAVE_NOTE],
+  task: [SAVE_TASK],
+  query: [SEARCH_ITEMS, GET_ITEM],
+};
+
+const NAMED: Record<ClarificationOption, string> = { note: "a Note", task: "a Task", query: "a Query about the Inventory" };
+
 const SYSTEM_PROMPT =
   "You file a person's messages. Read the message and call exactly one tool that fits it: " +
   "save_note for something to remember, save_task for something to do, " +
   "list_tasks when they ask to see their Tasks, " +
   "search_items or get_item when they ask about the Inventory (you will answer once you have the results), " +
-  "change_inventory when they ask to change Inventory data.";
+  "change_inventory when they ask to change Inventory data, " +
+  "ask_clarification only when you can't tell whether it is a Note, a Task or a Query.";
 
-/** Throws AllModelsFailedError, carrying every attempt, when no model gives a usable answer. */
+/**
+ * With `fixedAs`, the User has already said in a Clarification what the message is, so only that type's tools are offered.
+ * Throws AllModelsFailedError, carrying every attempt, when no model gives a usable answer.
+ */
 export async function classify(
   llm: Llm,
   transcript: string,
-  context: { today: { date: string; weekday: string }; timezone: string },
+  context: { today: { date: string; weekday: string }; timezone: string; fixedAs?: ClarificationOption },
 ): Promise<LlmAnswer<Classification>> {
+  const { fixedAs } = context;
+  const instructions =
+    fixedAs === undefined
+      ? SYSTEM_PROMPT
+      : `You file a person's messages. They have said this message is ${NAMED[fixedAs]}; call the tool that files it as that.`;
   const messages: ChatMessage[] = [
     {
       role: "system",
       content:
-        `${SYSTEM_PROMPT} Today is ${context.today.weekday} ${context.today.date}, ` +
+        `${instructions} Today is ${context.today.weekday} ${context.today.date}, ` +
         `in the person's timezone ${context.timezone}. Resolve relative dates such as "Thursday" from today.`,
     },
     { role: "user", content: transcript },
   ];
+  const tools =
+    fixedAs === undefined
+      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, ASK_CLARIFICATION]
+      : TOOLS_FOR[fixedAs];
   return llm.callTool({
     messages,
-    tools: [SAVE_NOTE, SAVE_TASK, LIST_TASKS, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY],
-    read: (call) => readClassification(call, messages),
+    tools,
+    read: (call) => readClassification(call, messages, tools),
   });
 }
 
 /** Throws on an unusable answer, so the next model is tried. */
-function readClassification(call: MadeToolCall, conversation: ChatMessage[]): Classification {
+function readClassification(call: MadeToolCall, conversation: ChatMessage[], offered: Tool[]): Classification {
+  if (!offered.some((tool) => tool.function.name === call.name)) throw new Error(`Model called unoffered tool "${call.name}"`);
   if (isInventoryToolCall(call)) return { kind: "query", conversation, first: readInventoryToolCall(call) };
   const args = toolArguments(call.arguments);
   switch (call.name) {
@@ -143,6 +180,8 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[]): Cl
       return { kind: "list-tasks", date: listedDate(optionalString(args, "date")) };
     case CHANGE_INVENTORY.function.name:
       return { kind: "command" };
+    case ASK_CLARIFICATION.function.name:
+      return { kind: "unclear" };
     default:
       throw new Error(`Model called unknown tool "${call.name}"`);
   }

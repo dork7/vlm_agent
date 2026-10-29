@@ -25,6 +25,7 @@ describe("core: model fallback list", () => {
         chatId: "chat-42",
         messageId: "1001",
         content: { kind: "text", text },
+        clarifyWith: "buttons",
       },
       async (event) => {
         events.push(event);

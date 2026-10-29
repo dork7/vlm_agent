@@ -65,6 +65,7 @@ describe("core: asking to see my Tasks", () => {
         chatId: "chat-42",
         messageId: "3001",
         content: { kind: "text", text },
+        clarifyWith: "buttons",
       },
       async (event) => {
         events.push(event);

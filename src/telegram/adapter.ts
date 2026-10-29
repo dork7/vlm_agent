@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import type { RouteHandlerMethod } from "fastify";
-import { Bot, webhookCallback, type BotConfig, type Context } from "grammy";
-import type { Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
+import { Bot, InlineKeyboard, webhookCallback, type BotConfig, type Context } from "grammy";
+import type { ClarificationOption, Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
 import { formatDay } from "../time.ts";
 
 const PROCESSING = "processing…";
@@ -10,6 +10,10 @@ const FAILURE = "Sorry, I couldn't process that. Please try again.";
 const VOICE_TOO_LONG = (maxSeconds: number) =>
   `Sorry, that Voice Message is over ${maxSeconds / 60} minutes. Please split it into shorter ones.`;
 const COMMAND_DECLINED = "Sorry, changing Inventory data isn't supported yet. You can ask me about it instead.";
+const CLARIFICATION_QUESTION = "I couldn't tell what this is. Is it a Note, a Task or a Query about the Inventory?";
+const OPTION_LABELS: Record<ClarificationOption, string> = { note: "Note", task: "Task", query: "Query" };
+/** A tapped Clarification button's data: `clarify:<Clarification ID>:<option>`, well under Telegram's 64 bytes. */
+const CLARIFICATION_BUTTON = /^clarify:([0-9a-f]{24}):(note|task|query)$/;
 const GREETING =
   "Hi! Send a Voice Message or type, and I'll save it as a Note or a Task, or look something up in the Inventory. " +
   'Ask "show tasks" to see your Tasks.';
@@ -22,14 +26,23 @@ export function createTelegramBot(token: string, core: Core, config?: BotConfig<
   // Other bot commands are not messages to file.
   bot.on("message:text").filter((ctx) => !ctx.entities("bot_command").some((e) => e.offset === 0), (ctx) => {
     // Acknowledge the update straight away and process the message in the background.
-    void handleMessage(ctx, core, { kind: "text", text: ctx.message.text });
+    void handleMessage(ctx, core, { messageId: ctx.message.message_id, content: { kind: "text", text: ctx.message.text } });
   });
   bot.on("message:voice", (ctx) => {
     const { file_id, duration } = ctx.message.voice;
     void handleMessage(ctx, core, {
-      kind: "voice",
-      durationSeconds: duration,
-      download: (toPath) => downloadFile(ctx, file_id, toPath),
+      messageId: ctx.message.message_id,
+      content: { kind: "voice", durationSeconds: duration, download: (toPath) => downloadFile(ctx, file_id, toPath) },
+    });
+  });
+  bot.callbackQuery(CLARIFICATION_BUTTON, (ctx) => {
+    const [, clarificationId, answer] = ctx.match as [string, string, ClarificationOption];
+    void ctx.answerCallbackQuery().catch((error) => console.error("Failed to answer a button tap", error));
+    void handleMessage(ctx, core, {
+      messageId: `callback:${ctx.callbackQuery.id}`,
+      content: { kind: "clarification-answer", clarificationId, answer },
+      // The question's message is edited into the result.
+      replyId: ctx.callbackQuery.message?.message_id,
     });
   });
 
@@ -48,28 +61,37 @@ export function telegramWebhookHandler(bot: Bot, secretToken: string): RouteHand
 }
 
 async function handleMessage(
-  ctx: Context & { message: { message_id: number } },
+  ctx: Context,
   core: Core,
-  content: InboundMessage["content"],
+  inbound: { messageId: number | string; content: InboundMessage["content"]; replyId?: number | undefined },
 ) {
   const message: InboundMessage = {
     sender: { channel: "telegram", channelId: String(ctx.from!.id) },
     chatId: String(ctx.chat!.id),
-    messageId: String(ctx.message.message_id),
-    content,
+    messageId: String(inbound.messageId),
+    content: inbound.content,
+    clarifyWith: "buttons",
   };
 
-  let processingReplyId: number | undefined;
-  // Edit the processing reply when there is one, otherwise send a new message.
-  const show = async (text: string) => {
-    if (processingReplyId === undefined) await ctx.reply(text);
-    else await ctx.api.editMessageText(ctx.chat!.id, processingReplyId, text);
+  // The bot's reply being edited: the processing reply, or the Clarification whose button was tapped.
+  let replyId = inbound.replyId;
+  // Edit that reply when there is one, otherwise send a new message.
+  const show = async (text: string, buttons?: InlineKeyboard) => {
+    const extra = buttons ? { reply_markup: buttons } : {};
+    if (replyId === undefined) await ctx.reply(text, extra);
+    else await ctx.api.editMessageText(ctx.chat!.id, replyId, text, extra);
   };
 
   const render = async (event: CoreEvent) => {
     if (event.type === "processing-started") {
-      processingReplyId = (await ctx.reply(PROCESSING)).message_id;
+      if (replyId === undefined) replyId = (await ctx.reply(PROCESSING)).message_id;
+      else await show(PROCESSING);
       return;
+    }
+    if (event.type === "clarification-needed") {
+      const buttons = new InlineKeyboard();
+      for (const option of event.options) buttons.text(OPTION_LABELS[option], `clarify:${event.clarificationId}:${option}`);
+      return show(CLARIFICATION_QUESTION, buttons);
     }
     switch (event.result.kind) {
       case "note-saved":

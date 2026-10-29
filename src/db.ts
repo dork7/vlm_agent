@@ -52,12 +52,32 @@ export type ProcessedMessageDoc = {
   receivedAt: Date;
 };
 
+/** What the User can say an unclear message is. */
+export type ClarificationOption = "note" | "task" | "query";
+
+/** A Clarification the bot asked; it stays pending, with no timeout, until the User answers. */
+export type ClarificationDoc = {
+  _id?: ObjectId;
+  ownerId: ObjectId;
+  sender: ChannelIdentity;
+  /** The unclear message, which the answer completes. */
+  source: { channel: string; chatId: string; messageId: string };
+  transcript: string;
+  status: "pending" | "answered";
+  answer: ClarificationOption | null;
+  /** The ID of the message that answered it, on the same Channel. */
+  answeredBy: string | null;
+  createdAt: Date;
+  answeredAt: Date | null;
+};
+
 export type Database = {
   db: Db;
   users: Collection<UserDoc>;
   notes: Collection<NoteDoc>;
   tasks: Collection<TaskDoc>;
   processedMessages: Collection<ProcessedMessageDoc>;
+  clarifications: Collection<ClarificationDoc>;
   close(): Promise<void>;
 };
 
@@ -74,12 +94,16 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
   const processedMessages = db.collection<ProcessedMessageDoc>("processedMessages");
   await processedMessages.createIndex({ channel: 1, chatId: 1, messageId: 1 }, { unique: true });
 
+  const clarifications = db.collection<ClarificationDoc>("clarifications");
+  await clarifications.createIndex({ ownerId: 1, "source.channel": 1, "source.chatId": 1, status: 1 });
+
   return {
     db,
     users,
     notes: db.collection<NoteDoc>("notes"),
     tasks: db.collection<TaskDoc>("tasks"),
     processedMessages,
+    clarifications,
     close: () => client.close(),
   };
 }

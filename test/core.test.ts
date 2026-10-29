@@ -28,6 +28,7 @@ describe("core: a typed message", () => {
     chatId: `chat-${senderId}`,
     messageId: "1001",
     content: { kind: "text", text },
+    clarifyWith: "buttons",
   });
 
   it("from a known Channel Identity becomes a Note named by its Heading", async () => {

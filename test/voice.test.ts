@@ -59,6 +59,7 @@ describe("core: a Voice Message", () => {
         downloads++;
       },
     },
+    clarifyWith: "buttons",
   });
 
   it("becomes a Note just like the same words typed, keeping the Transcript", async () => {

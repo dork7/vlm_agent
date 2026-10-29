@@ -19,7 +19,7 @@ describe("Telegram webhook route", () => {
         received.push(message);
         return new Promise<HandledMessage>((resolve) => {
           finishHandling = () =>
-            resolve({ duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [] });
+            resolve({ duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null });
         });
       },
     };
@@ -81,6 +81,7 @@ describe("Telegram webhook route", () => {
         chatId: "42",
         messageId: "55",
         content: { kind: "text", text: "Remember the dentist's new number" },
+        clarifyWith: "buttons",
       },
     ]);
   });

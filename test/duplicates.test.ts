@@ -34,6 +34,7 @@ describe("core: a message delivered more than once", () => {
     chatId: "chat-42",
     messageId: "3003",
     content: { kind: "text", text: "Remember the dentist's new number" },
+    clarifyWith: "buttons",
     ...overrides,
   });
 
