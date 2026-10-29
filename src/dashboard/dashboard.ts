@@ -1,11 +1,10 @@
-import { fileURLToPath } from "node:url";
-import ejs from "ejs";
-import type { FastifyPluginAsync, FastifyReply } from "fastify";
-import { ObjectId } from "mongodb";
+import type { FastifyPluginAsync } from "fastify";
 import { writeMarkdownCopies } from "../core/markdown.ts";
 import type { Database, UserDoc } from "../db.ts";
 import { formatDay, instantToWallClock } from "../time.ts";
 import { authenticate } from "./auth.ts";
+import { badRequest, field, notFound, parseId, render, type Form } from "./http.ts";
+import { usersPortalRoutes } from "./users-portal.ts";
 
 export type DashboardOptions = {
   database: Database;
@@ -20,8 +19,6 @@ declare module "fastify" {
     user: UserDoc;
   }
 }
-
-const VIEWS = fileURLToPath(new URL("./views/", import.meta.url));
 
 /** The server-rendered dashboard, behind HTTP basic auth checked against Users. */
 export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app, options) => {
@@ -77,10 +74,10 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
   });
 
   /** One of the User's own Notes; anyone else's, or none, is not found. */
-  const ownNote = (user: UserDoc, id: string) =>
-    ObjectId.isValid(id) && id.length === 24
-      ? database.notes.findOne({ _id: new ObjectId(id), ownerId: user._id! })
-      : Promise.resolve(null);
+  const ownNote = (user: UserDoc, id: string) => {
+    const _id = parseId(id);
+    return _id ? database.notes.findOne({ _id, ownerId: user._id! }) : Promise.resolve(null);
+  };
 
   app.get<{ Params: { id: string } }>("/notes/:id", async (request, reply) => {
     const note = await ownNote(request.user, request.params.id);
@@ -97,7 +94,7 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     if (!note) return notFound(reply);
     const heading = field(request.body, "heading");
     const text = field(request.body, "text");
-    if (!heading || !text) return reply.code(400).type("text/plain").send("A Note needs a Heading and text.");
+    if (!heading || !text) return badRequest(reply, "A Note needs a Heading and text.");
 
     // The original Transcript is left as it was, so it stays verbatim.
     await database.notes.updateOne({ _id: note._id }, { $set: { heading, text, updatedAt: new Date() } });
@@ -112,24 +109,10 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     await refreshMarkdownCopies(request.user);
     return reply.redirect("/notes", 303);
   });
+
+  // A child plugin, so it shares this login but adds its own admin-only check.
+  await app.register(usersPortalRoutes, { database, defaultTimezone });
 };
-
-/** A submitted HTML form's fields. */
-type Form = Record<string, string> | undefined;
-
-function field(form: Form, name: string): string {
-  const value = form?.[name];
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function notFound(reply: FastifyReply) {
-  return reply.code(404).type("text/plain").send("Not found.");
-}
-
-async function render(reply: FastifyReply, view: string, data: Record<string, unknown>) {
-  const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, data, { async: true });
-  return reply.type("text/html; charset=utf-8").send(html);
-}
 
 /** Text to search for, made safe to use as a pattern. */
 function escapeRegExp(text: string): string {

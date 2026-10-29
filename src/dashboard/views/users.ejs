@@ -1,0 +1,26 @@
+<%- include("header", { title: "Users" }) %>
+<h1>Users</h1>
+<ul class="notes">
+<% for (const user of users) { %>
+  <li>
+    <a href="/users/<%= user._id %>"><%= user.username %></a><% if (user.isAdmin) { %> <span class="meta">(admin)</span><% } %>
+    <div class="meta">
+      <%= user.timezone ?? `${defaultTimezone} (default)` %> ·
+      <%= user.channelIdentities.length === 0 ? "no Channel Identities" : user.channelIdentities.map((identity) => `${identity.channel} ${identity.channelId}`).join(", ") %>
+    </div>
+  </li>
+<% } %>
+</ul>
+
+<h2>Create a User</h2>
+<form method="post" action="/users">
+  <label for="username">Username</label>
+  <input type="text" id="username" name="username" required autocomplete="off">
+  <label for="password">Password</label>
+  <input type="password" id="password" name="password" required autocomplete="new-password">
+  <label for="timezone">IANA timezone, such as Asia/Dubai; leave empty for the default (<%= defaultTimezone %>)</label>
+  <input type="text" id="timezone" name="timezone">
+  <label><input type="checkbox" name="isAdmin"> Admin</label>
+  <p><button type="submit">Create User</button></p>
+</form>
+<%- include("footer") %>
