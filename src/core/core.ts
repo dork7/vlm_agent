@@ -1,5 +1,5 @@
 import type { ChannelIdentity, Database, TaskDoc, TaskDue, UserDoc } from "../db.ts";
-import type { Llm } from "../llm/openrouter.ts";
+import { AllModelsFailedError, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
 import { classify, type Due } from "./classify.ts";
@@ -31,8 +31,11 @@ export type CoreEvent = { type: "processing-started" } | { type: "result"; resul
 
 export type EmitEvent = (event: CoreEvent) => Promise<void>;
 
+/** What happened while handling a message, for its Run record (ticket 12). */
+export type HandledMessage = { modelAttempts: ModelAttempt[] };
+
 export type Core = {
-  handleMessage(message: InboundMessage, emit: EmitEvent): Promise<void>;
+  handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
 };
 
 export function createCore(deps: {
@@ -59,29 +62,27 @@ export function createCore(deps: {
       const user = await findUserByChannelIdentity(database, message.sender);
       if (!user) {
         await emit({ type: "result", result: { kind: "refused" } });
-        return;
+        return { modelAttempts: [] };
       }
 
       await emit({ type: "processing-started" });
 
       const transcript = message.content.text;
       const timezone = user.timezone ?? defaultTimezone;
-      let classification;
+      let answer;
       try {
-        classification = await classify(llm, transcript, {
-          today: todayIn(now(), timezone),
-          timezone,
-        });
+        answer = await classify(llm, transcript, { today: todayIn(now(), timezone), timezone });
       } catch (error) {
         console.error("Classification failed", error);
         await emit({ type: "result", result: { kind: "error" } });
-        return;
+        return { modelAttempts: error instanceof AllModelsFailedError ? error.attempts : [] };
       }
+      const { value: classification, attempts: modelAttempts } = answer;
 
       if (classification.kind === "list-tasks") {
         const { tasks, more } = await listTasks(database, user._id!, timezone);
         await emit({ type: "result", result: { kind: "tasks-listed", tasks, more } });
-        return;
+        return { modelAttempts };
       }
 
       const savedAt = now();
@@ -99,7 +100,7 @@ export function createCore(deps: {
         });
         await refreshMarkdownCopies(user, timezone);
         await emit({ type: "result", result: { kind: "note-saved", heading: classification.heading } });
-        return;
+        return { modelAttempts };
       }
 
       await database.tasks.insertOne({
@@ -120,6 +121,7 @@ export function createCore(deps: {
         type: "result",
         result: { kind: "task-saved", heading: classification.heading, due: classification.due },
       });
+      return { modelAttempts };
     },
   };
 }

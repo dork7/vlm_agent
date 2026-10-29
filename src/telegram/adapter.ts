@@ -4,7 +4,7 @@ import { formatDay } from "../time.ts";
 
 const PROCESSING = "processing…";
 const REFUSAL = "Sorry, you're not allowed to use this bot. Please ask its owner for access.";
-const FAILURE = "Sorry, something went wrong processing that. Please try again.";
+const FAILURE = "Sorry, I couldn't process that. Please try again.";
 const GREETING = 'Hi! Type a message and I\'ll save it as a Note or a Task. Ask "show tasks" to see your Tasks.';
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */

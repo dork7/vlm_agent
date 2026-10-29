@@ -1,4 +1,4 @@
-import type { Llm, Tool } from "../llm/openrouter.ts";
+import type { Llm, LlmAnswer, Tool, ToolCall } from "../llm/openrouter.ts";
 
 export type Due = { date: string; time?: string } | null;
 
@@ -72,12 +72,13 @@ const SYSTEM_PROMPT =
   "save_note for something to remember, save_task for something to do, " +
   "list_tasks when they ask to see their Tasks.";
 
+/** Throws AllModelsFailedError, carrying every attempt, when no model gives a usable answer. */
 export async function classify(
   llm: Llm,
   transcript: string,
   context: { today: { date: string; weekday: string }; timezone: string },
-): Promise<Classification> {
-  const call = await llm.callTool({
+): Promise<LlmAnswer<Classification>> {
+  return llm.callTool({
     messages: [
       {
         role: "system",
@@ -88,8 +89,12 @@ export async function classify(
       { role: "user", content: transcript },
     ],
     tools: [SAVE_NOTE, SAVE_TASK, LIST_TASKS],
+    read: readClassification,
   });
+}
 
+/** Throws on an unusable answer, so the next model is tried. */
+function readClassification(call: ToolCall): Classification {
   const args = toolArguments(call.arguments);
   switch (call.name) {
     case SAVE_NOTE.function.name:
