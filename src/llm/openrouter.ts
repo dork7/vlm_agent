@@ -15,10 +15,20 @@ export type ToolCall = { name: string; arguments: string };
 /** A tool call as the model made it, with the ID that its result must refer to. */
 export type MadeToolCall = ToolCall & { id: string };
 
-/** One try of one model from the fallback list, kept so it can be recorded on the Run. */
-export type ModelAttempt =
+/** Tokens a model used, as OpenRouter reported them. */
+export type TokenUsage = { prompt: number; completion: number; total: number };
+
+/**
+ * One try of one model from the fallback list, kept so it can be recorded on the Run.
+ * `tokens` and `cost` (in US dollars) are present only when the model responded and OpenRouter reported them.
+ */
+export type ModelAttempt = (
   | { model: string; outcome: "succeeded" }
-  | { model: string; outcome: "failed"; reason: string };
+  | { model: string; outcome: "failed"; reason: string }
+) & { tokens?: TokenUsage; cost?: number };
+
+/** What OpenRouter reported a response cost. */
+type Usage = { tokens?: TokenUsage; cost?: number };
 
 export type Llm = {
   /**
@@ -42,7 +52,13 @@ const REQUEST_TIMEOUT_MS = 60_000;
 export function createOpenRouter(config: { apiKey: string; baseUrl: string; models: string[] }): Llm {
   if (config.models.length === 0) throw new Error("OpenRouter needs at least one model");
 
-  const requestToolCall = async (model: string, messages: ChatMessage[], tools: Tool[]): Promise<MadeToolCall> => {
+  /** `usage` is filled in as soon as the response arrives, so it is known even when the answer is unusable. */
+  const requestToolCall = async (
+    model: string,
+    messages: ChatMessage[],
+    tools: Tool[],
+    usage: Usage,
+  ): Promise<MadeToolCall> => {
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
@@ -55,7 +71,9 @@ export function createOpenRouter(config: { apiKey: string; baseUrl: string; mode
 
     const body = (await response.json()) as {
       choices?: Array<{ message?: { tool_calls?: Array<{ id?: string; function?: ToolCall }> } }>;
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown; cost?: unknown };
     };
+    Object.assign(usage, readUsage(body.usage));
     const made = body.choices?.[0]?.message?.tool_calls?.[0];
     const call = made?.function;
     if (!call?.name || typeof call.arguments !== "string") {
@@ -68,15 +86,29 @@ export function createOpenRouter(config: { apiKey: string; baseUrl: string; mode
     async callTool({ messages, tools, read }) {
       const attempts: ModelAttempt[] = [];
       for (const model of config.models) {
+        const usage: Usage = {};
         try {
-          const value = read(await requestToolCall(model, messages, tools));
-          attempts.push({ model, outcome: "succeeded" });
+          const value = read(await requestToolCall(model, messages, tools, usage));
+          attempts.push({ model, outcome: "succeeded", ...usage });
           return { value, attempts };
         } catch (error) {
-          attempts.push({ model, outcome: "failed", reason: error instanceof Error ? error.message : String(error) });
+          attempts.push({ model, outcome: "failed", reason: error instanceof Error ? error.message : String(error), ...usage });
         }
       }
       throw new AllModelsFailedError(attempts);
     },
+  };
+}
+
+function readUsage(
+  usage: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown; cost?: unknown } | undefined,
+): Usage {
+  if (!usage) return {};
+  const { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total, cost } = usage;
+  return {
+    ...(typeof prompt === "number" && typeof completion === "number" && typeof total === "number"
+      ? { tokens: { prompt, completion, total } }
+      : {}),
+    ...(typeof cost === "number" ? { cost } : {}),
   };
 }

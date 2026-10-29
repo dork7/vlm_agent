@@ -1,11 +1,11 @@
-import { fileURLToPath } from "node:url";
-import ejs from "ejs";
-import type { FastifyPluginAsync, FastifyReply } from "fastify";
+import type { FastifyPluginAsync } from "fastify";
 import { ObjectId } from "mongodb";
 import { writeMarkdownCopies } from "../core/markdown.ts";
 import type { Database, UserDoc } from "../db.ts";
 import { formatDay, instantToWallClock } from "../time.ts";
 import { authenticate } from "./auth.ts";
+import { notFound, render } from "./render.ts";
+import { runRoutes } from "./runs.ts";
 
 export type DashboardOptions = {
   database: Database;
@@ -20,8 +20,6 @@ declare module "fastify" {
     user: UserDoc;
   }
 }
-
-const VIEWS = fileURLToPath(new URL("./views/", import.meta.url));
 
 /** The server-rendered dashboard, behind HTTP basic auth checked against Users. */
 export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app, options) => {
@@ -112,6 +110,9 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     await refreshMarkdownCopies(request.user);
     return reply.redirect("/notes", 303);
   });
+
+  // Admins only.
+  await app.register(runRoutes, { database, timezoneOf });
 };
 
 /** A submitted HTML form's fields. */
@@ -120,15 +121,6 @@ type Form = Record<string, string> | undefined;
 function field(form: Form, name: string): string {
   const value = form?.[name];
   return typeof value === "string" ? value.trim() : "";
-}
-
-function notFound(reply: FastifyReply) {
-  return reply.code(404).type("text/plain").send("Not found.");
-}
-
-async function render(reply: FastifyReply, view: string, data: Record<string, unknown>) {
-  const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, data, { async: true });
-  return reply.type("text/html; charset=utf-8").send(html);
 }
 
 /** Text to search for, made safe to use as a pattern. */

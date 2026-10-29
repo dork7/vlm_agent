@@ -39,7 +39,7 @@ describe("Telegram adapter: a Clarification", () => {
         received.push(message);
         for (const event of script) await emit(event);
         finishHandling();
-        return { duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null } satisfies HandledMessage;
+        return { duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null, runId: null } satisfies HandledMessage;
       },
       sendDueReminders: async () => {},
       completeTask: async () => ({ kind: "task-not-found" }),

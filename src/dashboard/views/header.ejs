@@ -14,7 +14,13 @@
     label { display: block; margin-top: .75rem; font-weight: 600; }
     input[type=text], input[type=search], textarea { width: 100%; box-sizing: border-box; font: inherit; }
     form.inline { display: inline; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+    .status { font-weight: 600; }
+    .status-failed { color: #b00020; }
+    .status-awaiting-clarification { background: #fff3c4; color: #6b4e00; padding: 0 .25rem; }
+    .status-refused, .status-in-progress { color: #666; }
   </style>
 </head>
 <body>
-<nav><a href="/notes">Notes</a></nav>
+<nav><a href="/notes">Notes</a><% if (locals.viewer?.isAdmin) { %> <a href="/runs">Runs</a><% } %></nav>

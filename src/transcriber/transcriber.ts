@@ -11,12 +11,17 @@ export type AudioSource = {
   download(toPath: string): Promise<void>;
 };
 
+/** Times one step of transcribing as a stage of the Run; a step that throws fails its stage. */
+export type TimeStage = <T>(stage: "download" | "conversion" | "transcription", step: () => Promise<T>) => Promise<T>;
+
 export type Transcriber = {
   /** The speech-to-text model used, for the Run record. */
   readonly model: string;
-  /** Returns the Transcript; throws when transcription fails or hears nothing. */
-  transcribe(audio: AudioSource): Promise<string>;
+  /** Returns the Transcript, timing each step with `timeStage`; throws when transcription fails or hears nothing. */
+  transcribe(audio: AudioSource, timeStage?: TimeStage): Promise<string>;
 };
+
+const untimed: TimeStage = (_stage, step) => step();
 
 const run = promisify(execFile);
 const CONVERT_TIMEOUT_MS = 60_000;
@@ -35,26 +40,30 @@ export function createWhisperTranscriber(config: {
 }): Transcriber {
   return {
     model: basename(config.modelPath),
-    async transcribe(audio) {
+    async transcribe(audio, timeStage = untimed) {
       const dir = await mkdtemp(join(config.workDir ?? tmpdir(), "voice-"));
       try {
         const original = join(dir, "original");
         const wav = join(dir, "audio.wav");
         const output = join(dir, "transcript");
-        await audio.download(original);
-        await run(
-          config.ffmpegPath,
-          ["-nostdin", "-loglevel", "error", "-y", "-i", original, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav],
-          { timeout: CONVERT_TIMEOUT_MS },
+        await timeStage("download", () => audio.download(original));
+        await timeStage("conversion", () =>
+          run(
+            config.ffmpegPath,
+            ["-nostdin", "-loglevel", "error", "-y", "-i", original, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav],
+            { timeout: CONVERT_TIMEOUT_MS },
+          ),
         );
-        await run(
-          config.whisperPath,
-          ["-m", config.modelPath, "-f", wav, "-l", "en", "-nt", "-np", "-otxt", "-of", output],
-          { timeout: TRANSCRIBE_TIMEOUT_MS },
-        );
-        const transcript = cleanTranscript(await readFile(`${output}.txt`, "utf8"));
-        if (transcript === "") throw new Error("Transcription heard no speech");
-        return transcript;
+        return await timeStage("transcription", async () => {
+          await run(
+            config.whisperPath,
+            ["-m", config.modelPath, "-f", wav, "-l", "en", "-nt", "-np", "-otxt", "-of", output],
+            { timeout: TRANSCRIBE_TIMEOUT_MS },
+          );
+          const transcript = cleanTranscript(await readFile(`${output}.txt`, "utf8"));
+          if (transcript === "") throw new Error("Transcription heard no speech");
+          return transcript;
+        });
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

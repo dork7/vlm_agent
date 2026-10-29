@@ -19,7 +19,7 @@ describe("Telegram webhook route", () => {
         received.push(message);
         return new Promise<HandledMessage>((resolve) => {
           finishHandling = () =>
-            resolve({ duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null });
+            resolve({ duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null, runId: null });
         });
       },
       sendDueReminders: async () => {},

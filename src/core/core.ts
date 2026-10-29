@@ -18,6 +18,7 @@ import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
 import { answerQuery } from "./query.ts";
 import { sendDueReminders, type DeliverReminder, type ReminderEvent } from "./reminders.ts";
+import { startRun, type RunRecorder, type RunType } from "./runs.ts";
 import { listTasks } from "./tasks.ts";
 
 export type { ClarificationOption, DeliverReminder, Due, ReminderEvent };
@@ -87,10 +88,12 @@ export type HandledMessage = {
   inventoryRequests: InventoryRequest[];
   /** The Clarification this message asked (it is then awaiting an answer), asked again, or answered. */
   clarification: { id: string; outcome: "asked" | "re-asked" | "answered" } | null;
+  /** The Run recording this message; null for a duplicate, which has none of its own. */
+  runId: string | null;
 };
 
 /** What every step of handling one message works with. */
-type Handling = { emit: EmitEvent; handled: HandledMessage; llm: Llm; inventory: InventoryClient };
+type Handling = { emit: EmitEvent; handled: HandledMessage; llm: Llm; inventory: InventoryClient; run: RunRecorder };
 
 export type Core = {
   handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
@@ -141,13 +144,16 @@ export function createCore(deps: {
 
   const handle = async (message: InboundMessage, run: Handling) => {
     const { emit, handled } = run;
-    const user = await findUserByChannelIdentity(database, message.sender);
+    const { content } = message;
+    const user = await run.run.stage("received", () => findUserByChannelIdentity(database, message.sender), {
+      details: () => (content.kind === "voice" ? { durationSeconds: content.durationSeconds } : {}),
+    });
+    if (user) run.run.set({ userId: user._id!, username: user.username });
     if (!user) {
       await emit({ type: "result", result: { kind: "refused" } });
       return;
     }
 
-    const { content } = message;
     if (content.kind === "clarification-answer") {
       await answerClarification(user, content.clarificationId, content.answer, message.messageId, run);
       return;
@@ -187,7 +193,12 @@ export function createCore(deps: {
       const startedAt = performance.now();
       const durationMs = () => Math.round(performance.now() - startedAt);
       try {
-        transcript = await deps.transcriber.transcribe(content);
+        transcript = await deps.transcriber.transcribe(content, (name, step) =>
+          run.run.stage(name, step, {
+            details: (value) => (name === "transcription" ? { model, transcriptLength: String(value).length } : {}),
+            detailsOnError: () => (name === "transcription" ? { model } : {}),
+          }),
+        );
       } catch (error) {
         console.error("Transcription failed", error);
         handled.transcription = { model, durationMs: durationMs(), error: errorMessage(error) };
@@ -203,6 +214,7 @@ export function createCore(deps: {
 
   const askClarification = async (clarificationId: string, outcome: "asked" | "re-asked", run: Handling) => {
     run.handled.clarification = { id: clarificationId, outcome };
+    run.run.set({ clarificationId: new ObjectId(clarificationId) });
     await run.emit({ type: "clarification-needed", clarificationId, options: CLARIFICATION_OPTIONS });
   };
 
@@ -229,10 +241,18 @@ export function createCore(deps: {
       return;
     }
     run.handled.clarification = { id: clarificationId, outcome: "answered" };
+    run.run.set({ clarificationId: clarification._id });
     await run.emit({ type: "processing-started" });
     let filed = false;
     try {
       filed = await fileTranscript({ ...clarification, user }, run, answer);
+      // The Runs that asked it are no longer waiting.
+      if (filed) {
+        await database.runs.updateMany(
+          { clarificationId: clarification._id, status: "awaiting-clarification" },
+          { $set: { status: "succeeded", type: answer } },
+        );
+      }
     } finally {
       if (!filed) {
         await database.clarifications.updateOne(
@@ -361,31 +381,91 @@ export function createCore(deps: {
         modelAttempts: [],
         inventoryRequests: [],
         clarification: null,
+        runId: null,
       };
       if (!(await claimMessage(message))) return { ...handled, duplicate: true };
+      const { sender, chatId, messageId } = message;
+      const run = await startRun(database, { sender, chatId, messageId, content: message.content.kind }, now);
+      handled.runId = run.id.toHexString();
+
+      // The first model call classifies the message; any later ones write a Query's answer from its lookups.
+      let modelCalls = 0;
       const recordingLlm: Llm = {
-        async callTool(request) {
-          try {
-            const answer = await deps.llm.callTool(request);
-            handled.modelAttempts.push(...answer.attempts);
-            return answer;
-          } catch (error) {
-            if (error instanceof AllModelsFailedError) handled.modelAttempts.push(...error.attempts);
-            throw error;
-          }
+        callTool(request) {
+          return run.stage(
+            modelCalls++ === 0 ? "classification" : "query-answer",
+            async () => {
+              try {
+                const answer = await deps.llm.callTool(request);
+                handled.modelAttempts.push(...answer.attempts);
+                return answer;
+              } catch (error) {
+                if (error instanceof AllModelsFailedError) handled.modelAttempts.push(...error.attempts);
+                throw error;
+              }
+            },
+            {
+              details: (answer) => ({ attempts: answer.attempts }),
+              detailsOnError: (error) => (error instanceof AllModelsFailedError ? { attempts: error.attempts } : {}),
+            },
+          );
         },
       };
       const recordingInventory: InventoryClient = {
-        async lookup(lookup) {
-          const result = await deps.inventory.lookup(lookup);
-          handled.inventoryRequests.push(result.request);
-          return result;
+        lookup(lookup) {
+          return run.stage(
+            "tool-call",
+            async () => {
+              const result = await deps.inventory.lookup(lookup);
+              handled.inventoryRequests.push(result.request);
+              return result;
+            },
+            {
+              details: ({ request }) => ({ ...request }),
+              // Not finding an item by its SKU is an answer, not a failure.
+              failure: ({ request }) =>
+                request.status === 200 || request.status === 404 ? null : (request.error ?? `HTTP ${request.status}`),
+            },
+          );
         },
       };
-      await handle(message, { emit, handled, llm: recordingLlm, inventory: recordingInventory });
+      // Whatever the message comes to settles the Run's status, and sending it is the reply stage.
+      const recordingEmit: EmitEvent = async (event) => {
+        if (event.type === "processing-started") return emit(event);
+        settleRun(run, event);
+        await run.stage("reply", () => emit(event), {
+          details: () => ({ sent: event.type === "result" ? event.result.kind : event.type }),
+        });
+      };
+      try {
+        await handle(message, { emit: recordingEmit, handled, llm: recordingLlm, inventory: recordingInventory, run });
+      } catch (error) {
+        run.fail(errorMessage(error));
+        throw error;
+      } finally {
+        await run.finish();
+      }
       return handled;
     },
   };
+}
+
+/** The Run's type for each result that completes a message. */
+const RESULT_TYPES: Partial<Record<Result["kind"], RunType>> = {
+  "note-saved": "note",
+  "task-saved": "task",
+  "query-answered": "query",
+  "tasks-listed": "task-list",
+  "command-declined": "command",
+};
+
+function settleRun(run: RunRecorder, event: Exclude<CoreEvent, { type: "processing-started" }>) {
+  if (event.type === "clarification-needed") return run.set({ status: "awaiting-clarification" });
+  const { result } = event;
+  if (result.kind === "refused") return run.set({ status: "refused" });
+  if (result.kind === "error") return run.fail();
+  if (result.kind === "voice-too-long") return run.fail(`Voice Message longer than ${result.maxSeconds} seconds`);
+  run.set({ status: "succeeded", type: RESULT_TYPES[result.kind] ?? null });
 }
 
 function errorMessage(error: unknown): string {

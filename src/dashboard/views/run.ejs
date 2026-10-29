@@ -1,0 +1,61 @@
+<%- include("header", { title: "Run" }) %>
+<p><a href="/runs">&larr; All Runs</a></p>
+<h1>Run <%- include("run-status", { status: run.status }) %></h1>
+<table>
+  <tr><th>Started</th><td><%= shown(run.startedAt) %></td></tr>
+  <tr><th>Total time</th><td><%= duration(run.durationMs) %></td></tr>
+  <tr><th>Sender</th><td><%= run.username ?? "unknown sender" %> (<%= run.sender.channel %> <%= run.sender.channelId %>)</td></tr>
+  <tr><th>Message</th><td><%= run.content %>, message <%= run.messageId %> in chat <%= run.chatId %></td></tr>
+  <tr><th>Type</th><td><%= run.type ?? "–" %></td></tr>
+  <% if (run.clarificationId) { %><tr><th>Clarification</th><td><%= run.clarificationId %></td></tr><% } %>
+</table>
+
+<% if (run.error) { %>
+  <h2>Error</h2>
+  <p class="status-failed">Failed in <strong><%= run.error.stage ?? "an unknown stage" %></strong>: <%= run.error.message %></p>
+<% } %>
+
+<h2>Stages</h2>
+<% if (run.stages.length === 0) { %>
+  <p>No stages recorded.</p>
+<% } else { %>
+  <table>
+    <thead><tr><th>Stage</th><th>Started</th><th>Duration</th><th>Outcome</th><th>Details</th></tr></thead>
+    <tbody>
+    <% for (const stage of run.stages) { %>
+      <tr>
+        <td><%= stage.name %></td>
+        <td><%= shown(stage.startedAt) %></td>
+        <td><%= duration(stage.durationMs) %></td>
+        <td class="status-<%= stage.outcome %>"><%= stage.outcome %><% if (stage.error) { %>: <%= stage.error %><% } %></td>
+        <td>
+        <% const { attempts, ...details } = stage.details; %>
+        <% if (Array.isArray(attempts)) { %>
+          <table>
+            <thead><tr><th>Model</th><th>Outcome</th><th>Tokens</th><th>Cost</th></tr></thead>
+            <tbody>
+            <% for (const attempt of attempts) { %>
+              <tr>
+                <td><%= attempt.model %></td>
+                <td class="status-<%= attempt.outcome %>"><%= attempt.outcome %><% if (attempt.reason) { %>: <%= attempt.reason %><% } %></td>
+                <td><%= attempt.tokens ? `${attempt.tokens.total} (${attempt.tokens.prompt} in, ${attempt.tokens.completion} out)` : "–" %></td>
+                <td><%= typeof attempt.cost === "number" ? `$${attempt.cost}` : "–" %></td>
+              </tr>
+            <% } %>
+            </tbody>
+          </table>
+        <% } %>
+        <% if (stage.name === "tool-call") { %>
+          <%= details.tool %> <code><%= details.endpoint %></code> · HTTP <%= details.status || "no response" %> · <%= duration(details.latencyMs) %><% if (details.error) { %> · <%= details.error %><% } %>
+        <% } else { %>
+          <% for (const [key, value] of Object.entries(details)) { %>
+            <div><%= key %>: <%= typeof value === "object" ? JSON.stringify(value) : value %></div>
+          <% } %>
+        <% } %>
+        </td>
+      </tr>
+    <% } %>
+    </tbody>
+  </table>
+<% } %>
+<%- include("footer") %>
