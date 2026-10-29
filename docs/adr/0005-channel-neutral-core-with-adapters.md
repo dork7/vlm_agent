@@ -1,0 +1,3 @@
+# Channel-neutral core with one adapter per Channel
+
+Telegram is only the first Channel; WhatsApp and an MCP-based Channel are planned. The core (transcribe, classify, act on Notes, Tasks and Queries) never imports a channel library: each Channel's adapter turns an incoming message into a channel-neutral form, and turns the core's plain events (processing started, result, Clarification needed) back into whatever its Channel can show, editing messages and showing buttons where supported and falling back to plain text questions where not. Users are channel-independent dashboard accounts that hold Channel Identities, so a new Channel never changes the user model. Don't let grammY or Telegram types leak into the core.
