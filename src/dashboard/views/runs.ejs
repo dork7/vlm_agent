@@ -1,0 +1,27 @@
+<%- include("header", { title: "Runs" }) %>
+<h1>Runs</h1>
+<p><a href="/runs/totals">Totals</a></p>
+<% if (awaiting > 0) { %>
+  <p><span class="status status-awaiting-clarification"><%= awaiting %> <%= awaiting === 1 ? "Run" : "Runs" %> awaiting a Clarification</span></p>
+<% } %>
+<% if (runs.length === 0) { %>
+  <p>No Runs yet.</p>
+<% } else { %>
+  <table class="runs">
+    <thead>
+      <tr><th>Started</th><th>Sender</th><th>Outcome</th><th>Type</th><th>Total time</th></tr>
+    </thead>
+    <tbody>
+    <% for (const run of runs) { %>
+      <tr class="status-<%= run.status %>">
+        <td><a href="/runs/<%= run._id %>"><%= shown(run.startedAt) %></a></td>
+        <td><%= run.username ?? `${run.sender.channel} ${run.sender.channelId}` %></td>
+        <td><%- include("run-status", { status: run.status }) %></td>
+        <td><%= run.type ?? "–" %></td>
+        <td><%= duration(run.durationMs) %></td>
+      </tr>
+    <% } %>
+    </tbody>
+  </table>
+<% } %>
+<%- include("footer") %>

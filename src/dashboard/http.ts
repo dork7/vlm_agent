@@ -26,7 +26,11 @@ export function badRequest(reply: FastifyReply, message: string) {
   return reply.code(400).type("text/plain").send(message);
 }
 
+/**
+ * Renders a view as the page; every view also gets the logged-in `viewer`. Not in EJS's async mode,
+ * in which the views' un-awaited `include` calls would print "[object Promise]".
+ */
 export async function render(reply: FastifyReply, view: string, data: Record<string, unknown>) {
-  const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, data, { async: true });
+  const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, { viewer: reply.request.user, ...data });
   return reply.type("text/html; charset=utf-8").send(html);
 }

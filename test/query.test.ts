@@ -165,7 +165,9 @@ describe("core: a Query about the Inventory", () => {
     await send("What do we have?");
 
     const collections = (await database().db.listCollections().toArray()).map((collection) => collection.name);
-    expect(collections.filter((name) => !["clarifications", "notes", "processedMessages", "tasks", "users"].includes(name))).toEqual([]);
+    expect(collections.filter((name) => !["clarifications", "notes", "processedMessages", "runs", "tasks", "users"].includes(name))).toEqual([]);
+    // The Run records each lookup's endpoint and status, never the items it returned.
+    expect(JSON.stringify(await database().runs.find().toArray())).not.toContain("Desk lamp");
     expect(await database().notes.countDocuments()).toBe(0);
     expect(await database().tasks.countDocuments()).toBe(0);
   });

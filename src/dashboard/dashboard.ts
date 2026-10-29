@@ -5,6 +5,7 @@ import type { Database, TaskDue, UserDoc } from "../db.ts";
 import { formatDay, instantToWallClock, wallClockToInstant } from "../time.ts";
 import { authenticate } from "./auth.ts";
 import { badRequest, field, notFound, parseId, render, type Form } from "./http.ts";
+import { runRoutes } from "./runs.ts";
 import { usersPortalRoutes } from "./users-portal.ts";
 
 export type DashboardOptions = {
@@ -184,8 +185,9 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     return reply.redirect("/notes", 303);
   });
 
-  // A child plugin, so it shares this login but adds its own admin-only check.
+  // Child plugins, so they share this login but add their own admin-only check.
   await app.register(usersPortalRoutes, { database, defaultTimezone });
+  await app.register(runRoutes, { database, timezoneOf });
 };
 
 /**

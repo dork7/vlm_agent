@@ -1,4 +1,5 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type ObjectId } from "mongodb";
+import type { RunDoc } from "./core/runs.ts";
 
 export type ChannelIdentity = { channel: string; channelId: string };
 
@@ -78,6 +79,8 @@ export type Database = {
   tasks: Collection<TaskDoc>;
   processedMessages: Collection<ProcessedMessageDoc>;
   clarifications: Collection<ClarificationDoc>;
+  /** One per inbound message (ADR 0003). */
+  runs: Collection<RunDoc>;
   close(): Promise<void>;
 };
 
@@ -101,6 +104,11 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
   // The Reminder check every minute looks for open Tasks not yet reminded.
   await tasks.createIndex({ status: 1, reminderSentAt: 1 });
 
+  const runs = db.collection<RunDoc>("runs");
+  // The observability dashboard lists recent Runs, and finds those of an answered Clarification.
+  await runs.createIndex({ startedAt: -1 });
+  await runs.createIndex({ clarificationId: 1, status: 1 });
+
   return {
     db,
     users,
@@ -108,6 +116,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
     tasks,
     processedMessages,
     clarifications,
+    runs,
     close: () => client.close(),
   };
 }
