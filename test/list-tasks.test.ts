@@ -54,8 +54,8 @@ describe("core: asking to see my Tasks", () => {
     });
   }
 
-  async function ask(text = "show tasks"): Promise<CoreEvent[]> {
-    openRouter.script(MODEL, toolCall("list_tasks", {}));
+  async function ask(text = "show tasks", args: Record<string, unknown> = {}): Promise<CoreEvent[]> {
+    openRouter.script(MODEL, toolCall("list_tasks", args));
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [MODEL] });
     const core = createCore({ database: database(), llm, inventory: unusedInventory, transcriber: unusedTranscriber, defaultTimezone: "UTC" });
     const events: CoreEvent[] = [];
@@ -96,6 +96,7 @@ describe("core: asking to see my Tasks", () => {
             { heading: "Order mugs", due: { date: "2026-10-01" }, status: "done" },
           ],
           more: 0,
+          date: null,
         },
       },
     ]);
@@ -116,6 +117,7 @@ describe("core: asking to see my Tasks", () => {
         kind: "tasks-listed",
         tasks: [{ heading: "Call the supplier", due: null, status: "open" }],
         more: 0,
+        date: null,
       },
     });
   });
@@ -126,7 +128,7 @@ describe("core: asking to see my Tasks", () => {
 
     const events = await ask("what's on my list?");
 
-    expect(events.at(-1)).toEqual({ type: "result", result: { kind: "tasks-listed", tasks: [], more: 0 } });
+    expect(events.at(-1)).toEqual({ type: "result", result: { kind: "tasks-listed", tasks: [], more: 0, date: null } });
   });
 
   it("cuts a long list to 30 Tasks and says how many more there are", async () => {
@@ -142,6 +144,55 @@ describe("core: asking to see my Tasks", () => {
     if (result?.type !== "result" || result.result.kind !== "tasks-listed") return;
     expect(result.result.tasks).toHaveLength(30);
     expect(result.result.more).toBe(5);
+  });
+
+  it("lists only the Tasks due on the day asked about, on the User's own clock", async () => {
+    const ownerId = await owner();
+    // 15:00 on 30 October in Dubai (UTC+4).
+    await saveTask(ownerId, "Call the supplier", { kind: "moment", at: new Date("2026-10-30T11:00:00Z") });
+    await saveTask(ownerId, "Send the invoice", { kind: "date", date: "2026-10-30" });
+    await saveTask(ownerId, "Order mugs", { kind: "date", date: "2026-10-30" }, "done");
+    // Still 30 October in UTC, but 01:00 on the 31st in Dubai.
+    await saveTask(ownerId, "Late-night delivery", { kind: "moment", at: new Date("2026-10-30T21:00:00Z") });
+    await saveTask(ownerId, "Pay rent", { kind: "date", date: "2026-10-31" });
+    await saveTask(ownerId, "Fix the shelf", null);
+
+    const events = await ask("what's due on Friday?", { date: "2026-10-30" });
+
+    expect(events.at(-1)).toEqual({
+      type: "result",
+      result: {
+        kind: "tasks-listed",
+        tasks: [
+          // A date-only Task counts as due at 09:00, so it comes before the 15:00 one.
+          { heading: "Send the invoice", due: { date: "2026-10-30" }, status: "open" },
+          { heading: "Call the supplier", due: { date: "2026-10-30", time: "15:00" }, status: "open" },
+          { heading: "Order mugs", due: { date: "2026-10-30" }, status: "done" },
+        ],
+        more: 0,
+        date: "2026-10-30",
+      },
+    });
+  });
+
+  it("lists nothing when no Task is due on the day asked about", async () => {
+    const ownerId = await owner();
+    await saveTask(ownerId, "Pay rent", { kind: "date", date: "2026-10-31" });
+
+    const events = await ask("anything due tomorrow?", { date: "2026-10-30" });
+
+    expect(events.at(-1)).toEqual({
+      type: "result",
+      result: { kind: "tasks-listed", tasks: [], more: 0, date: "2026-10-30" },
+    });
+  });
+
+  it("treats a day that isn't a real date as an unusable answer", async () => {
+    await owner();
+
+    const events = await ask("what's due on the 31st?", { date: "2026-11-31" });
+
+    expect(events.at(-1)).toEqual({ type: "result", result: { kind: "error" } });
   });
 
   it("offers the model a way to ask for the Task list", async () => {

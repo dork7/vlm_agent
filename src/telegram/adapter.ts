@@ -77,7 +77,7 @@ async function handleMessage(
       case "task-saved":
         return show(`Saved Task: ${event.result.heading}${formatDue(event.result.due)}`);
       case "tasks-listed":
-        return show(formatTaskList(event.result.tasks, event.result.more));
+        return show(formatTaskList(event.result.tasks, event.result.more, event.result.date));
       case "query-answered":
         return show(event.result.answer);
       case "command-declined":
@@ -116,13 +116,13 @@ function formatDue(due: Due): string {
   return ` (due ${formatDay(due.date)}${due.time ? `, ${due.time}` : ""})`;
 }
 
-function formatTaskList(tasks: ListedTask[], more: number): string {
-  if (tasks.length === 0) return "You have no Tasks yet.";
+function formatTaskList(tasks: ListedTask[], more: number, date: string | null): string {
+  if (tasks.length === 0) return date === null ? "You have no Tasks yet." : `You have no Tasks due ${formatDay(date)}.`;
   const lines = tasks.map(
     (task, index) =>
       `${index + 1}. ${task.status === "done" ? "✓ " : ""}${task.heading}${formatDue(task.due)}` +
       (task.status === "done" ? " (done)" : ""),
   );
   if (more > 0) lines.push(`…and ${more} more. See them all on the dashboard.`);
-  return ["Your Tasks:", ...lines].join("\n");
+  return [date === null ? "Your Tasks:" : `Your Tasks due ${formatDay(date)}:`, ...lines].join("\n");
 }

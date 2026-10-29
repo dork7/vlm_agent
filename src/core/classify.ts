@@ -7,7 +7,8 @@ export type Due = { date: string; time?: string } | null;
 export type Classification =
   | { kind: "note"; heading: string }
   | { kind: "task"; heading: string; description: string; due: Due }
-  | { kind: "list-tasks" }
+  /** `date` ("YYYY-MM-DD") limits the list to Tasks due that day on the User's own clock. */
+  | { kind: "list-tasks"; date: string | null }
   /** A Query: the model's first Inventory lookup, and the conversation it came from so it can continue. */
   | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
   /** A Command: a request to change Inventory data, which is not supported yet. */
@@ -67,9 +68,20 @@ const LIST_TASKS: Tool = {
   function: {
     name: "list_tasks",
     description:
-      "Show the person all their saved Tasks. Use only when they ask to see their Tasks or to-do list, " +
+      "Show the person their saved Tasks. Use only when they ask to see their Tasks or to-do list, " +
       "not when they ask to add something to it.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
+    parameters: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description:
+            "Only if they ask about one particular day (such as \"tomorrow\" or \"on Friday\"): that day as YYYY-MM-DD. " +
+            "Omit to show all their Tasks.",
+        },
+      },
+      additionalProperties: false,
+    },
   },
 };
 
@@ -128,7 +140,7 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[]): Cl
         due: due(optionalString(args, "due_date"), optionalString(args, "due_time")),
       };
     case LIST_TASKS.function.name:
-      return { kind: "list-tasks" };
+      return { kind: "list-tasks", date: listedDate(optionalString(args, "date")) };
     case CHANGE_INVENTORY.function.name:
       return { kind: "command" };
     default:
@@ -145,6 +157,12 @@ function due(date: string | undefined, time: string | undefined): Due {
   if (time === undefined) return { date };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error(`Model gave an invalid due_time "${time}"`);
   return { date, time };
+}
+
+function listedDate(date: string | undefined): string | null {
+  if (date === undefined) return null;
+  if (!isCalendarDate(date)) throw new Error(`Model gave an invalid list_tasks date "${date}"`);
+  return date;
 }
 
 function isCalendarDate(date: string): boolean {

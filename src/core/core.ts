@@ -26,7 +26,8 @@ export type Result =
   | { kind: "note-saved"; heading: string }
   /** `due` is the date and optional time on the User's own clock. */
   | { kind: "task-saved"; heading: string; due: Due }
-  | { kind: "tasks-listed"; tasks: ListedTask[]; more: number }
+  /** `date` is the day the list was limited to, or null for all the User's Tasks. */
+  | { kind: "tasks-listed"; tasks: ListedTask[]; more: number; date: string | null }
   /** A plain-language answer to a Query about the Inventory. */
   | { kind: "query-answered"; answer: string }
   /** A Command: changing Inventory data is not supported yet. */
@@ -165,8 +166,9 @@ export function createCore(deps: {
     }
 
     if (classification.kind === "list-tasks") {
-      const { tasks, more } = await listTasks(database, user._id!, timezone);
-      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more } });
+      const { date } = classification;
+      const { tasks, more } = await listTasks(database, user._id!, timezone, date);
+      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
       return;
     }
 

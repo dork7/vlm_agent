@@ -25,13 +25,19 @@ export async function ownTasksInOrder(database: Database, ownerId: ObjectId, tim
   );
 }
 
-/** The owner's Tasks: open ones soonest due first (undated after), then done ones. */
+/**
+ * The owner's Tasks: open ones soonest due first (undated after), then done ones.
+ * With a `date` ("YYYY-MM-DD"), only the Tasks due that day on the owner's own clock.
+ */
 export async function listTasks(
   database: Database,
   ownerId: ObjectId,
   timezone: string,
+  date: string | null = null,
 ): Promise<{ tasks: ListedTask[]; more: number }> {
-  const sorted = await ownTasksInOrder(database, ownerId, timezone);
+  const sorted = (await ownTasksInOrder(database, ownerId, timezone)).filter(
+    (task) => date === null || shownDue(task.due, timezone)?.date === date,
+  );
 
   return {
     tasks: sorted.slice(0, LISTED_TASKS_LIMIT).map((task) => ({

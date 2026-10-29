@@ -19,3 +19,4 @@
 - The glossary has no term yet for this request; it is deliberately not called a Query, which covers the Inventory only. Consider a term via `/domain-modeling` when implementing.
 - Implemented. The core caps the list at 30 Tasks and reports how many more there are, so truncation is channel-neutral and tested at Seam 1. Date-only Tasks sort as due at 09:00 that day.
 - "add a task to call the supplier" still becomes a Task: checked against the real model (nvidia/nemotron-3.5-super-vl:free), since the fake OpenRouter can't test prompt routing.
+- Follow-up (user request): `list_tasks` takes an optional `date`. A list asked for one particular day shows only the Tasks due that day on the User's own clock (a timed Task counts by its local date), done ones included, and the reply says "Your Tasks due Fri 30 Oct 2026:" or "You have no Tasks due …". An invalid date is an unusable answer, so the next model is tried.
