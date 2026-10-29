@@ -1,0 +1,22 @@
+<%- include("header", { title: note.heading }) %>
+<p><a href="/notes">&larr; All Notes</a></p>
+<h1><%= note.heading %></h1>
+<p class="meta">Saved <%= saved %><% if (edited) { %> · edited <%= edited %><% } %></p>
+<pre><%= note.text %></pre>
+
+<h2>Original Transcript</h2>
+<pre><%= note.transcript %></pre>
+
+<h2>Edit</h2>
+<form method="post" action="/notes/<%= note._id %>">
+  <label for="heading">Heading</label>
+  <input type="text" id="heading" name="heading" value="<%= note.heading %>" required>
+  <label for="text">Text</label>
+  <textarea id="text" name="text" rows="6" required><%= note.text %></textarea>
+  <p><button type="submit">Save</button></p>
+</form>
+
+<form method="post" action="/notes/<%= note._id %>/delete" onsubmit="return confirm('Delete this Note?')">
+  <button type="submit">Delete Note</button>
+</form>
+<%- include("footer") %>

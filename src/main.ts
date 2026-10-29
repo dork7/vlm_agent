@@ -49,6 +49,7 @@ async function main() {
   const { mode } = config.telegram;
   const server = buildServer({
     inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey },
+    dashboard: { database, defaultTimezone: config.defaultTimezone, markdownDir: config.markdownDir },
     ...(mode.kind === "webhook"
       ? { webhook: { path: mode.path, handler: telegramWebhookHandler(bot, mode.secretToken) } }
       : {}),
