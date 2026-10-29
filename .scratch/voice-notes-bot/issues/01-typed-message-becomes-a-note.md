@@ -8,10 +8,16 @@ In this slice the classifier only needs to produce Notes; later tickets add Task
 
 **Status:** ready-for-agent
 
-- [ ] The project installs, typechecks, and its test suite runs with one command each; one command starts the app locally.
-- [ ] Startup fails with a clear message naming any missing required environment variable.
-- [ ] With no Users in the database, startup creates one admin User from the configured username, password (stored only as a scrypt hash with a per-user salt) and Telegram Channel Identity; with Users present, it creates nothing.
-- [ ] Through the core entry point (Seam 1), a typed message from a known Channel Identity produces a processing-started event and then a result event naming the saved Note's Heading, and the Note is stored with its owner, Heading, text and original Transcript.
-- [ ] A message from an unknown Channel Identity produces a refusal event and stores nothing.
-- [ ] The core has no dependency on grammY or any Telegram type.
+- [x] The project installs, typechecks, and its test suite runs with one command each; one command starts the app locally.
+- [x] Startup fails with a clear message naming any missing required environment variable.
+- [x] With no Users in the database, startup creates one admin User from the configured username, password (stored only as a scrypt hash with a per-user salt) and Telegram Channel Identity; with Users present, it creates nothing.
+- [x] Through the core entry point (Seam 1), a typed message from a known Channel Identity produces a processing-started event and then a result event naming the saved Note's Heading, and the Note is stored with its owner, Heading, text and original Transcript.
+- [x] A message from an unknown Channel Identity produces a refusal event and stores nothing.
+- [x] The core has no dependency on grammY or any Telegram type.
 - [ ] Manually: typing to the bot on Telegram shows "processing…" edited into "Saved Note: <Heading>".
+
+## Comments
+
+- Implemented. All criteria are covered by tests except the manual Telegram check, which needs a real bot token, MongoDB and OpenRouter key.
+- First-admin creation is tested directly rather than through Seam 2: there is no HTTP surface showing Users until ticket 08. Move the test then.
+- The core now emits an `error` result when classification fails; ticket 03 extends this to the fallback list.
