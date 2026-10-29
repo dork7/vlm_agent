@@ -1,0 +1,202 @@
+[
+  {
+    "sku": "SKU-01",
+    "name": "Blue mug",
+    "category": "Kitchen",
+    "quantity": 48,
+    "unitPrice": 6.5,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-02",
+    "name": "Red mug",
+    "category": "Kitchen",
+    "quantity": 6,
+    "unitPrice": 6.5,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-03",
+    "name": "Glass tumbler",
+    "category": "Kitchen",
+    "quantity": 120,
+    "unitPrice": 3.25,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-04",
+    "name": "Steel water bottle",
+    "category": "Kitchen",
+    "quantity": 35,
+    "unitPrice": 14.0,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-05",
+    "name": "Cutting board",
+    "category": "Kitchen",
+    "quantity": 9,
+    "unitPrice": 18.0,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-06",
+    "name": "Chef's knife",
+    "category": "Kitchen",
+    "quantity": 14,
+    "unitPrice": 42.0,
+    "location": "Warehouse C"
+  },
+  {
+    "sku": "SKU-07",
+    "name": "A5 notebook",
+    "category": "Office",
+    "quantity": 210,
+    "unitPrice": 2.25,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-08",
+    "name": "Gel pen, black",
+    "category": "Office",
+    "quantity": 540,
+    "unitPrice": 0.9,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-09",
+    "name": "Desk lamp",
+    "category": "Office",
+    "quantity": 3,
+    "unitPrice": 24.0,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-10",
+    "name": "Stapler",
+    "category": "Office",
+    "quantity": 27,
+    "unitPrice": 7.5,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-11",
+    "name": "Printer paper, A4 ream",
+    "category": "Office",
+    "quantity": 64,
+    "unitPrice": 5.75,
+    "location": "Warehouse C"
+  },
+  {
+    "sku": "SKU-12",
+    "name": "Whiteboard marker set",
+    "category": "Office",
+    "quantity": 8,
+    "unitPrice": 6.0,
+    "location": "Warehouse C"
+  },
+  {
+    "sku": "SKU-13",
+    "name": "USB-C cable, 1 m",
+    "category": "Electronics",
+    "quantity": 150,
+    "unitPrice": 4.5,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-14",
+    "name": "Wireless mouse",
+    "category": "Electronics",
+    "quantity": 22,
+    "unitPrice": 19.0,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-15",
+    "name": "Mechanical keyboard",
+    "category": "Electronics",
+    "quantity": 5,
+    "unitPrice": 79.0,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-16",
+    "name": "27-inch monitor",
+    "category": "Electronics",
+    "quantity": 11,
+    "unitPrice": 229.0,
+    "location": "Warehouse C"
+  },
+  {
+    "sku": "SKU-17",
+    "name": "Laptop stand",
+    "category": "Electronics",
+    "quantity": 2,
+    "unitPrice": 35.0,
+    "location": "Warehouse C"
+  },
+  {
+    "sku": "SKU-18",
+    "name": "Power bank",
+    "category": "Electronics",
+    "quantity": 41,
+    "unitPrice": 29.0,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-19",
+    "name": "Hand soap refill",
+    "category": "Cleaning",
+    "quantity": 30,
+    "unitPrice": 3.5,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-20",
+    "name": "Microfibre cloth pack",
+    "category": "Cleaning",
+    "quantity": 75,
+    "unitPrice": 4.0,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-21",
+    "name": "Bin bags, roll of 50",
+    "category": "Cleaning",
+    "quantity": 7,
+    "unitPrice": 5.0,
+    "location": "Warehouse C"
+  },
+  {
+    "sku": "SKU-22",
+    "name": "Glass cleaner",
+    "category": "Cleaning",
+    "quantity": 19,
+    "unitPrice": 3.75,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-23",
+    "name": "Coffee beans, 1 kg",
+    "category": "Pantry",
+    "quantity": 12,
+    "unitPrice": 21.0,
+    "location": "Warehouse A"
+  },
+  {
+    "sku": "SKU-24",
+    "name": "Green tea, 100 bags",
+    "category": "Pantry",
+    "quantity": 4,
+    "unitPrice": 8.5,
+    "location": "Warehouse B"
+  },
+  {
+    "sku": "SKU-25",
+    "name": "Oat milk, 1 L",
+    "category": "Pantry",
+    "quantity": 60,
+    "unitPrice": 2.1,
+    "location": "Warehouse C"
+  }
+]

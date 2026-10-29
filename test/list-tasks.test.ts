@@ -6,6 +6,7 @@ import { createOpenRouter } from "../src/llm/openrouter.ts";
 import { ensureFirstAdmin, findUserByChannelIdentity, hashPassword } from "../src/users.ts";
 import { toolCall, useFakeOpenRouter } from "./fakes/fake-openrouter.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
+import { unusedInventory } from "./fakes/unused-inventory.ts";
 
 const MODEL = "test/model-a";
 
@@ -56,7 +57,7 @@ describe("core: asking to see my Tasks", () => {
   async function ask(text = "show tasks"): Promise<CoreEvent[]> {
     openRouter.script(MODEL, toolCall("list_tasks", {}));
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [MODEL] });
-    const core = createCore({ database: database(), llm, defaultTimezone: "UTC" });
+    const core = createCore({ database: database(), llm, inventory: unusedInventory, defaultTimezone: "UTC" });
     const events: CoreEvent[] = [];
     await core.handleMessage(
       {

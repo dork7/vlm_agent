@@ -1,9 +1,11 @@
 import type { ChannelIdentity, Database, TaskDoc, TaskDue, UserDoc } from "../db.ts";
+import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
 import { AllModelsFailedError, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
 import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
+import { answerQuery } from "./query.ts";
 import { listTasks } from "./tasks.ts";
 
 export type { Due };
@@ -21,6 +23,10 @@ export type Result =
   /** `due` is the date and optional time on the User's own clock. */
   | { kind: "task-saved"; heading: string; due: Due }
   | { kind: "tasks-listed"; tasks: ListedTask[]; more: number }
+  /** A plain-language answer to a Query about the Inventory. */
+  | { kind: "query-answered"; answer: string }
+  /** A Command: changing Inventory data is not supported yet. */
+  | { kind: "command-declined" }
   | { kind: "refused" }
   | { kind: "error" };
 
@@ -32,7 +38,7 @@ export type CoreEvent = { type: "processing-started" } | { type: "result"; resul
 export type EmitEvent = (event: CoreEvent) => Promise<void>;
 
 /** What happened while handling a message, for its Run record (ticket 12). */
-export type HandledMessage = { modelAttempts: ModelAttempt[] };
+export type HandledMessage = { modelAttempts: ModelAttempt[]; inventoryRequests: InventoryRequest[] };
 
 export type Core = {
   handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
@@ -41,12 +47,13 @@ export type Core = {
 export function createCore(deps: {
   database: Database;
   llm: Llm;
+  inventory: InventoryClient;
   defaultTimezone: string;
   /** Folder for each User's read-only Markdown copies of their Tasks and Notes; none are written when absent. */
   markdownDir?: string;
   now?: () => Date;
 }): Core {
-  const { database, llm, defaultTimezone, markdownDir, now = () => new Date() } = deps;
+  const { database, defaultTimezone, markdownDir, now = () => new Date() } = deps;
 
   const refreshMarkdownCopies = async (user: UserDoc, timezone: string) => {
     if (markdownDir === undefined) return;
@@ -57,71 +64,113 @@ export function createCore(deps: {
     }
   };
 
-  return {
-    async handleMessage(message, emit) {
-      const user = await findUserByChannelIdentity(database, message.sender);
-      if (!user) {
-        await emit({ type: "result", result: { kind: "refused" } });
-        return { modelAttempts: [] };
-      }
+  const handle = async (message: InboundMessage, emit: EmitEvent, llm: Llm, inventory: InventoryClient) => {
+    const user = await findUserByChannelIdentity(database, message.sender);
+    if (!user) {
+      await emit({ type: "result", result: { kind: "refused" } });
+      return;
+    }
 
-      await emit({ type: "processing-started" });
+    await emit({ type: "processing-started" });
 
-      const transcript = message.content.text;
-      const timezone = user.timezone ?? defaultTimezone;
+    const transcript = message.content.text;
+    const timezone = user.timezone ?? defaultTimezone;
+    let classification;
+    try {
+      ({ value: classification } = await classify(llm, transcript, { today: todayIn(now(), timezone), timezone }));
+    } catch (error) {
+      console.error("Classification failed", error);
+      await emit({ type: "result", result: { kind: "error" } });
+      return;
+    }
+
+    if (classification.kind === "query") {
       let answer;
       try {
-        answer = await classify(llm, transcript, { today: todayIn(now(), timezone), timezone });
+        answer = await answerQuery({ llm, inventory, ...classification });
       } catch (error) {
-        console.error("Classification failed", error);
+        console.error("Answering the Query failed", error);
         await emit({ type: "result", result: { kind: "error" } });
-        return { modelAttempts: error instanceof AllModelsFailedError ? error.attempts : [] };
+        return;
       }
-      const { value: classification, attempts: modelAttempts } = answer;
+      await emit({ type: "result", result: { kind: "query-answered", answer } });
+      return;
+    }
 
-      if (classification.kind === "list-tasks") {
-        const { tasks, more } = await listTasks(database, user._id!, timezone);
-        await emit({ type: "result", result: { kind: "tasks-listed", tasks, more } });
-        return { modelAttempts };
-      }
+    if (classification.kind === "command") {
+      await emit({ type: "result", result: { kind: "command-declined" } });
+      return;
+    }
 
-      const savedAt = now();
-      const source = { channel: message.sender.channel, chatId: message.chatId, messageId: message.messageId };
+    if (classification.kind === "list-tasks") {
+      const { tasks, more } = await listTasks(database, user._id!, timezone);
+      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more } });
+      return;
+    }
 
-      if (classification.kind === "note") {
-        await database.notes.insertOne({
-          ownerId: user._id!,
-          heading: classification.heading,
-          text: transcript,
-          transcript,
-          source,
-          createdAt: savedAt,
-          updatedAt: savedAt,
-        });
-        await refreshMarkdownCopies(user, timezone);
-        await emit({ type: "result", result: { kind: "note-saved", heading: classification.heading } });
-        return { modelAttempts };
-      }
+    const savedAt = now();
+    const source = { channel: message.sender.channel, chatId: message.chatId, messageId: message.messageId };
 
-      await database.tasks.insertOne({
+    if (classification.kind === "note") {
+      await database.notes.insertOne({
         ownerId: user._id!,
         heading: classification.heading,
-        description: classification.description,
-        due: storedDue(classification.due, timezone),
-        status: "open",
-        reminderSentAt: null,
-        channelIdentity: message.sender,
+        text: transcript,
         transcript,
         source,
         createdAt: savedAt,
         updatedAt: savedAt,
       });
       await refreshMarkdownCopies(user, timezone);
-      await emit({
-        type: "result",
-        result: { kind: "task-saved", heading: classification.heading, due: classification.due },
-      });
-      return { modelAttempts };
+      await emit({ type: "result", result: { kind: "note-saved", heading: classification.heading } });
+      return;
+    }
+
+    await database.tasks.insertOne({
+      ownerId: user._id!,
+      heading: classification.heading,
+      description: classification.description,
+      due: storedDue(classification.due, timezone),
+      status: "open",
+      reminderSentAt: null,
+      channelIdentity: message.sender,
+      transcript,
+      source,
+      createdAt: savedAt,
+      updatedAt: savedAt,
+    });
+    await refreshMarkdownCopies(user, timezone);
+    await emit({
+      type: "result",
+      result: { kind: "task-saved", heading: classification.heading, due: classification.due },
+    });
+  };
+
+  return {
+    async handleMessage(message, emit) {
+      // Every model attempt and Inventory request made for this message, even on failure.
+      const handled: HandledMessage = { modelAttempts: [], inventoryRequests: [] };
+      const recordingLlm: Llm = {
+        async callTool(request) {
+          try {
+            const answer = await deps.llm.callTool(request);
+            handled.modelAttempts.push(...answer.attempts);
+            return answer;
+          } catch (error) {
+            if (error instanceof AllModelsFailedError) handled.modelAttempts.push(...error.attempts);
+            throw error;
+          }
+        },
+      };
+      const recordingInventory: InventoryClient = {
+        async lookup(lookup) {
+          const result = await deps.inventory.lookup(lookup);
+          handled.inventoryRequests.push(result.request);
+          return result;
+        },
+      };
+      await handle(message, emit, recordingLlm, recordingInventory);
+      return handled;
     },
   };
 }

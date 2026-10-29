@@ -1,4 +1,9 @@
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+export type ChatMessage =
+  | { role: "system" | "user"; content: string }
+  /** The model's earlier tool call, replayed so the conversation can continue. */
+  | { role: "assistant"; content: null; tool_calls: Array<{ id: string; type: "function"; function: ToolCall }> }
+  /** What running the tool call with this ID returned. */
+  | { role: "tool"; tool_call_id: string; content: string };
 
 export type Tool = {
   type: "function";
@@ -6,6 +11,9 @@ export type Tool = {
 };
 
 export type ToolCall = { name: string; arguments: string };
+
+/** A tool call as the model made it, with the ID that its result must refer to. */
+export type MadeToolCall = ToolCall & { id: string };
 
 /** One try of one model from the fallback list, kept so it can be recorded on the Run. */
 export type ModelAttempt =
@@ -17,7 +25,7 @@ export type Llm = {
    * Asks each model in turn to answer by calling exactly one of the given tools, until one gives an
    * answer `read` accepts. `read` throws on an unusable answer, which moves on to the next model.
    */
-  callTool<T>(request: { messages: ChatMessage[]; tools: Tool[]; read: (call: ToolCall) => T }): Promise<LlmAnswer<T>>;
+  callTool<T>(request: { messages: ChatMessage[]; tools: Tool[]; read: (call: MadeToolCall) => T }): Promise<LlmAnswer<T>>;
 };
 
 export type LlmAnswer<T> = { value: T; attempts: ModelAttempt[] };
@@ -34,7 +42,7 @@ const REQUEST_TIMEOUT_MS = 60_000;
 export function createOpenRouter(config: { apiKey: string; baseUrl: string; models: string[] }): Llm {
   if (config.models.length === 0) throw new Error("OpenRouter needs at least one model");
 
-  const requestToolCall = async (model: string, messages: ChatMessage[], tools: Tool[]): Promise<ToolCall> => {
+  const requestToolCall = async (model: string, messages: ChatMessage[], tools: Tool[]): Promise<MadeToolCall> => {
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
@@ -46,13 +54,14 @@ export function createOpenRouter(config: { apiKey: string; baseUrl: string; mode
     }
 
     const body = (await response.json()) as {
-      choices?: Array<{ message?: { tool_calls?: Array<{ function?: ToolCall }> } }>;
+      choices?: Array<{ message?: { tool_calls?: Array<{ id?: string; function?: ToolCall }> } }>;
     };
-    const call = body.choices?.[0]?.message?.tool_calls?.[0]?.function;
+    const made = body.choices?.[0]?.message?.tool_calls?.[0];
+    const call = made?.function;
     if (!call?.name || typeof call.arguments !== "string") {
       throw new Error(`OpenRouter ${model} did not call a tool`);
     }
-    return { name: call.name, arguments: call.arguments };
+    return { id: made?.id || "call_0", name: call.name, arguments: call.arguments };
   };
 
   return {

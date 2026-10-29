@@ -7,6 +7,7 @@ import { createOpenRouter } from "../src/llm/openrouter.ts";
 import { ensureFirstAdmin, findUserByChannelIdentity, hashPassword } from "../src/users.ts";
 import { toolCall, useFakeOpenRouter } from "./fakes/fake-openrouter.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
+import { unusedInventory } from "./fakes/unused-inventory.ts";
 
 const MODEL = "test/model-a";
 
@@ -32,6 +33,7 @@ describe("core: Markdown copies of Tasks and Notes", () => {
     const core = createCore({
       database: database(),
       llm,
+      inventory: unusedInventory,
       defaultTimezone: "UTC",
       markdownDir: options.dir ?? markdownDir,
       now: () => now,

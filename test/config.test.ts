@@ -9,6 +9,7 @@ const completeEnv = {
   ADMIN_USERNAME: "owner",
   ADMIN_PASSWORD: "s3cret",
   ADMIN_TELEGRAM_ID: "42",
+  INVENTORY_API_KEY: "inv-key",
 };
 
 describe("startup configuration", () => {
@@ -46,6 +47,19 @@ describe("startup configuration", () => {
   it("defaults the Markdown folder to ./markdown", () => {
     expect(loadConfig(completeEnv).markdownDir).toBe("./markdown");
     expect(loadConfig({ ...completeEnv, MARKDOWN_DIR: "/tmp/vault" }).markdownDir).toBe("/tmp/vault");
+  });
+
+  it("requires an Inventory API key and defaults the Inventory to this app's own routes", () => {
+    const { INVENTORY_API_KEY, ...env } = completeEnv;
+    expect(() => loadConfig(env)).toThrow("Missing required environment variables: INVENTORY_API_KEY");
+
+    expect(loadConfig({ ...completeEnv, PORT: "4000" }).inventory).toEqual({
+      baseUrl: "http://127.0.0.1:4000/inventory",
+      apiKey: "inv-key",
+    });
+    expect(loadConfig({ ...completeEnv, INVENTORY_BASE_URL: "https://stock.example.com/api" }).inventory.baseUrl).toBe(
+      "https://stock.example.com/api",
+    );
   });
 
   it("reads a complete environment", () => {

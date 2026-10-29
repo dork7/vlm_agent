@@ -1,6 +1,8 @@
 import { ConfigError, loadConfig } from "./config.ts";
 import { createCore } from "./core/core.ts";
 import { connectDatabase } from "./db.ts";
+import { createInventoryClient } from "./inventory/client.ts";
+import { loadSeedItems } from "./inventory/items.ts";
 import { createOpenRouter } from "./llm/openrouter.ts";
 import { buildServer } from "./server.ts";
 import { createTelegramBot } from "./telegram/adapter.ts";
@@ -22,6 +24,7 @@ async function main() {
   const core = createCore({
     database,
     llm: createOpenRouter(config.openRouter),
+    inventory: createInventoryClient(config.inventory),
     defaultTimezone: config.defaultTimezone,
     markdownDir: config.markdownDir,
   });
@@ -33,7 +36,7 @@ async function main() {
     await database.close();
     process.exit(1);
   }
-  const server = buildServer();
+  const server = buildServer({ inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey } });
 
   const shutdown = async () => {
     await bot.stop();

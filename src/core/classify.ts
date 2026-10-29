@@ -1,11 +1,17 @@
-import type { Llm, LlmAnswer, Tool, ToolCall } from "../llm/openrouter.ts";
+import type { ChatMessage, Llm, LlmAnswer, MadeToolCall, Tool } from "../llm/openrouter.ts";
+import { GET_ITEM, type InventoryToolCall, isInventoryToolCall, readInventoryToolCall, SEARCH_ITEMS } from "./query.ts";
+import { optionalString, requiredString, toolArguments } from "./tool-arguments.ts";
 
 export type Due = { date: string; time?: string } | null;
 
 export type Classification =
   | { kind: "note"; heading: string }
   | { kind: "task"; heading: string; description: string; due: Due }
-  | { kind: "list-tasks" };
+  | { kind: "list-tasks" }
+  /** A Query: the model's first Inventory lookup, and the conversation it came from so it can continue. */
+  | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
+  /** A Command: a request to change Inventory data, which is not supported yet. */
+  | { kind: "command" };
 
 const HEADING = {
   type: "string",
@@ -67,10 +73,23 @@ const LIST_TASKS: Tool = {
   },
 };
 
+const CHANGE_INVENTORY: Tool = {
+  type: "function",
+  function: {
+    name: "change_inventory",
+    description:
+      "Use when the person asks to change Inventory data, such as adding or removing items or changing quantities. " +
+      "Changes are not supported yet, so the request will be declined.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
 const SYSTEM_PROMPT =
   "You file a person's messages. Read the message and call exactly one tool that fits it: " +
   "save_note for something to remember, save_task for something to do, " +
-  "list_tasks when they ask to see their Tasks.";
+  "list_tasks when they ask to see their Tasks, " +
+  "search_items or get_item when they ask about the Inventory (you will answer once you have the results), " +
+  "change_inventory when they ask to change Inventory data.";
 
 /** Throws AllModelsFailedError, carrying every attempt, when no model gives a usable answer. */
 export async function classify(
@@ -78,23 +97,25 @@ export async function classify(
   transcript: string,
   context: { today: { date: string; weekday: string }; timezone: string },
 ): Promise<LlmAnswer<Classification>> {
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        `${SYSTEM_PROMPT} Today is ${context.today.weekday} ${context.today.date}, ` +
+        `in the person's timezone ${context.timezone}. Resolve relative dates such as "Thursday" from today.`,
+    },
+    { role: "user", content: transcript },
+  ];
   return llm.callTool({
-    messages: [
-      {
-        role: "system",
-        content:
-          `${SYSTEM_PROMPT} Today is ${context.today.weekday} ${context.today.date}, ` +
-          `in the person's timezone ${context.timezone}. Resolve relative dates such as "Thursday" from today.`,
-      },
-      { role: "user", content: transcript },
-    ],
-    tools: [SAVE_NOTE, SAVE_TASK, LIST_TASKS],
-    read: readClassification,
+    messages,
+    tools: [SAVE_NOTE, SAVE_TASK, LIST_TASKS, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY],
+    read: (call) => readClassification(call, messages),
   });
 }
 
 /** Throws on an unusable answer, so the next model is tried. */
-function readClassification(call: ToolCall): Classification {
+function readClassification(call: MadeToolCall, conversation: ChatMessage[]): Classification {
+  if (isInventoryToolCall(call)) return { kind: "query", conversation, first: readInventoryToolCall(call) };
   const args = toolArguments(call.arguments);
   switch (call.name) {
     case SAVE_NOTE.function.name:
@@ -108,6 +129,8 @@ function readClassification(call: ToolCall): Classification {
       };
     case LIST_TASKS.function.name:
       return { kind: "list-tasks" };
+    case CHANGE_INVENTORY.function.name:
+      return { kind: "command" };
     default:
       throw new Error(`Model called unknown tool "${call.name}"`);
   }
@@ -127,25 +150,4 @@ function due(date: string | undefined, time: string | undefined): Due {
 function isCalendarDate(date: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
   return new Date(`${date}T00:00:00Z`).toISOString().startsWith(date);
-}
-
-function toolArguments(raw: string): Record<string, unknown> {
-  const args: unknown = JSON.parse(raw);
-  if (typeof args !== "object" || args === null || Array.isArray(args)) {
-    throw new Error("Model's tool arguments are not an object");
-  }
-  return args as Record<string, unknown>;
-}
-
-function optionalString(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") throw new Error(`Model gave a non-string "${key}"`);
-  return value.trim() || undefined;
-}
-
-function requiredString(args: Record<string, unknown>, key: string): string {
-  const value = optionalString(args, key);
-  if (value === undefined) throw new Error(`Model left out "${key}"`);
-  return value;
 }

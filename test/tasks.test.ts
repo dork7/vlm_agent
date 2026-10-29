@@ -4,6 +4,7 @@ import { createOpenRouter } from "../src/llm/openrouter.ts";
 import { ensureFirstAdmin, findUserByChannelIdentity } from "../src/users.ts";
 import { toolCall, toolCalls, useFakeOpenRouter } from "./fakes/fake-openrouter.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
+import { unusedInventory } from "./fakes/unused-inventory.ts";
 
 const MODEL = "test/model-a";
 // Tuesday 27 October 2026, 09:30 in Dubai (UTC+4, no daylight saving).
@@ -16,7 +17,7 @@ describe("core: a message meant as a Task", () => {
   async function send(text: string, timezone = "Asia/Dubai", defaultTimezone = "UTC"): Promise<CoreEvent[]> {
     await ensureFirstAdmin(database(), { username: "owner", password: "pw", telegramId: "42", timezone });
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [MODEL] });
-    const core = createCore({ database: database(), llm, defaultTimezone, now: () => NOW });
+    const core = createCore({ database: database(), llm, inventory: unusedInventory, defaultTimezone, now: () => NOW });
     const message: InboundMessage = {
       sender: { channel: "telegram", channelId: "42" },
       chatId: "chat-42",

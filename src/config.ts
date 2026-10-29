@@ -7,6 +7,8 @@ export type Config = {
   telegram: { botToken: string };
   mongo: { uri: string; dbName: string };
   openRouter: { apiKey: string; baseUrl: string; models: string[] };
+  /** The Inventory API the model's tools call over HTTP (ADR 0002), and the key this app's own one accepts. */
+  inventory: { baseUrl: string; apiKey: string };
   firstAdmin: { username: string; password: string; telegramId: string };
 };
 
@@ -18,6 +20,7 @@ const REQUIRED = [
   "ADMIN_USERNAME",
   "ADMIN_PASSWORD",
   "ADMIN_TELEGRAM_ID",
+  "INVENTORY_API_KEY",
 ] as const;
 
 export class ConfigError extends Error {}
@@ -61,6 +64,10 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
       apiKey: required("OPENROUTER_API_KEY"),
       baseUrl: value("OPENROUTER_BASE_URL") ?? "https://openrouter.ai/api/v1",
       models,
+    },
+    inventory: {
+      baseUrl: value("INVENTORY_BASE_URL") ?? `http://127.0.0.1:${port}/inventory`,
+      apiKey: required("INVENTORY_API_KEY"),
     },
     firstAdmin: {
       username: required("ADMIN_USERNAME"),

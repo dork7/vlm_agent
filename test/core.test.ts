@@ -4,6 +4,7 @@ import { createOpenRouter } from "../src/llm/openrouter.ts";
 import { ensureFirstAdmin, findUserByChannelIdentity } from "../src/users.ts";
 import { toolCall, useFakeOpenRouter } from "./fakes/fake-openrouter.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
+import { unusedInventory } from "./fakes/unused-inventory.ts";
 
 const MODEL = "test/model-a";
 
@@ -14,7 +15,7 @@ describe("core: a typed message", () => {
   async function send(message: InboundMessage): Promise<CoreEvent[]> {
     await ensureFirstAdmin(database(), { username: "owner", password: "pw", telegramId: "42", timezone: "UTC" });
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [MODEL] });
-    const core = createCore({ database: database(), llm, defaultTimezone: "UTC" });
+    const core = createCore({ database: database(), llm, inventory: unusedInventory, defaultTimezone: "UTC" });
     const events: CoreEvent[] = [];
     await core.handleMessage(message, async (event) => {
       events.push(event);

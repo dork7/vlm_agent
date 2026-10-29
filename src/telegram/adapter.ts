@@ -5,7 +5,10 @@ import { formatDay } from "../time.ts";
 const PROCESSING = "processing…";
 const REFUSAL = "Sorry, you're not allowed to use this bot. Please ask its owner for access.";
 const FAILURE = "Sorry, I couldn't process that. Please try again.";
-const GREETING = 'Hi! Type a message and I\'ll save it as a Note or a Task. Ask "show tasks" to see your Tasks.';
+const COMMAND_DECLINED = "Sorry, changing Inventory data isn't supported yet. You can ask me about it instead.";
+const GREETING =
+  "Hi! Type a message and I'll save it as a Note or a Task, or look something up in the Inventory. " +
+  'Ask "show tasks" to see your Tasks.';
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
 export function createTelegramBot(token: string, core: Core): Bot {
@@ -50,6 +53,10 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
         return show(`Saved Task: ${event.result.heading}${formatDue(event.result.due)}`);
       case "tasks-listed":
         return show(formatTaskList(event.result.tasks, event.result.more));
+      case "query-answered":
+        return show(event.result.answer);
+      case "command-declined":
+        return show(COMMAND_DECLINED);
       case "refused":
         return show(REFUSAL);
       case "error":
