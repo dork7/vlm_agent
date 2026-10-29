@@ -1,7 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import type { RouteHandlerMethod } from "fastify";
 import { Bot, InlineKeyboard, webhookCallback, type BotConfig, type Context } from "grammy";
-import type { ClarificationOption, Core, CoreEvent, Due, InboundMessage, ListedTask } from "../core/core.ts";
+import type {
+  ClarificationOption,
+  Core,
+  CoreEvent,
+  Due,
+  InboundMessage,
+  ListedTask,
+  ReminderEvent,
+} from "../core/core.ts";
 import { formatDay } from "../time.ts";
 
 const PROCESSING = "processing…";
@@ -14,6 +22,9 @@ const CLARIFICATION_QUESTION = "I couldn't tell what this is. Is it a Note, a Ta
 const OPTION_LABELS: Record<ClarificationOption, string> = { note: "Note", task: "Task", query: "Query" };
 /** A tapped Clarification button's data: `clarify:<Clarification ID>:<option>`, well under Telegram's 64 bytes. */
 const CLARIFICATION_BUTTON = /^clarify:([0-9a-f]{24}):(note|task|query)$/;
+/** A tapped Reminder "Done" button's data: `done:<Task ID>`. */
+const DONE_BUTTON = /^done:([0-9a-f]{24})$/;
+const TASK_NOT_FOUND = "Sorry, I couldn't find that Task. It may have been deleted.";
 const GREETING =
   "Hi! Send a Voice Message or type, and I'll save it as a Note or a Task, or look something up in the Inventory. " +
   'Ask "show tasks" to see your Tasks.';
@@ -46,9 +57,34 @@ export function createTelegramBot(token: string, core: Core, config?: BotConfig<
     });
   });
 
+  bot.callbackQuery(DONE_BUTTON, (ctx) => {
+    const [, taskId] = ctx.match as [string, string];
+    void ctx.answerCallbackQuery().catch((error) => console.error("Failed to answer a button tap", error));
+    void completeTask(ctx, core, taskId);
+  });
+
   bot.catch((error) => console.error("Telegram update failed", error.error));
 
   return bot;
+}
+
+/** Sends a Reminder to its Telegram Channel Identity, with a "Done" button that marks the Task done. */
+export async function sendTelegramReminder(bot: Bot, reminder: ReminderEvent): Promise<void> {
+  await bot.api.sendMessage(reminder.to.channelId, `Reminder: ${reminder.heading}${formatDue(reminder.due)}`, {
+    reply_markup: new InlineKeyboard().text("Done", `done:${reminder.taskId}`),
+  });
+}
+
+/** Marks the Task done in the background and edits the Reminder, dropping its button, to say so. */
+async function completeTask(ctx: Context, core: Core, taskId: string) {
+  const show = (text: string) => ctx.editMessageText(text);
+  try {
+    const result = await core.completeTask({ channel: "telegram", channelId: String(ctx.from!.id) }, taskId);
+    await show(result.kind === "task-done" ? `Done: ${result.heading}` : TASK_NOT_FOUND);
+  } catch (error) {
+    console.error("Failed to mark a Task done from Telegram", error);
+    await show(FAILURE).catch((replyError) => console.error("Failed to send failure reply", replyError));
+  }
 }
 
 /**

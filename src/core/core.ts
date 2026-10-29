@@ -17,9 +17,10 @@ import { todayIn, wallClockToInstant } from "../time.ts";
 import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
 import { answerQuery } from "./query.ts";
+import { sendDueReminders, type DeliverReminder, type ReminderEvent } from "./reminders.ts";
 import { listTasks } from "./tasks.ts";
 
-export type { ClarificationOption, Due };
+export type { ClarificationOption, DeliverReminder, Due, ReminderEvent };
 
 /** A message from any Channel, in a channel-neutral shape (ADR 0005). */
 export type InboundMessage = {
@@ -93,7 +94,13 @@ type Handling = { emit: EmitEvent; handled: HandledMessage; llm: Llm; inventory:
 
 export type Core = {
   handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
+  /** Sends a Reminder for every open Task due at or before `asOf` that hasn't had one; the scheduler calls it every minute. */
+  sendDueReminders(asOf: Date, deliver: DeliverReminder): Promise<void>;
+  /** Marks one of the sender's own Tasks done, e.g. from a Reminder's "Done" button. */
+  completeTask(sender: ChannelIdentity, taskId: string): Promise<CompleteTaskResult>;
 };
+
+export type CompleteTaskResult = { kind: "task-done"; heading: string } | { kind: "task-not-found" };
 
 export function createCore(deps: {
   database: Database;
@@ -334,6 +341,18 @@ export function createCore(deps: {
   };
 
   return {
+    sendDueReminders: (asOf, deliver) => sendDueReminders(database, defaultTimezone, asOf, deliver),
+    async completeTask(sender, taskId) {
+      const user = await findUserByChannelIdentity(database, sender);
+      if (!user || !ObjectId.isValid(taskId)) return { kind: "task-not-found" };
+      const task = await database.tasks.findOneAndUpdate(
+        { _id: new ObjectId(taskId), ownerId: user._id! },
+        { $set: { status: "done", updatedAt: now() } },
+      );
+      if (!task) return { kind: "task-not-found" };
+      await refreshMarkdownCopies(user, user.timezone ?? defaultTimezone);
+      return { kind: "task-done", heading: task.heading };
+    },
     async handleMessage(message, emit) {
       // The transcription, and every model attempt and Inventory request, made for this message, even on failure.
       const handled: HandledMessage = {

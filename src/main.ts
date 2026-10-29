@@ -7,7 +7,8 @@ import { loadSeedItems } from "./inventory/items.ts";
 import { createOpenRouter } from "./llm/openrouter.ts";
 import { buildServer } from "./server.ts";
 import { createWhisperTranscriber } from "./transcriber/transcriber.ts";
-import { createTelegramBot, telegramWebhookHandler } from "./telegram/adapter.ts";
+import { startReminderScheduler } from "./reminder-scheduler.ts";
+import { createTelegramBot, sendTelegramReminder, telegramWebhookHandler } from "./telegram/adapter.ts";
 import { ensureFirstAdmin } from "./users.ts";
 
 async function main() {
@@ -54,7 +55,14 @@ async function main() {
       : {}),
   });
 
+  // Each Channel's adapter renders the Reminders addressed to it; only Telegram exists so far.
+  const stopReminders = startReminderScheduler(core, async (reminder) => {
+    if (reminder.to.channel === "telegram") return sendTelegramReminder(bot, reminder);
+    console.warn(`No adapter for Channel ${reminder.to.channel}; Reminder for Task ${reminder.taskId} not sent`);
+  });
+
   const shutdown = async () => {
+    stopReminders();
     // In webhook mode the webhook stays registered, so Telegram keeps updates until the bot is back.
     if (mode.kind === "polling") await bot.stop();
     await server.close();

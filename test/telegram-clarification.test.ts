@@ -41,6 +41,8 @@ describe("Telegram adapter: a Clarification", () => {
         finishHandling();
         return { duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null } satisfies HandledMessage;
       },
+      sendDueReminders: async () => {},
+      completeTask: async () => ({ kind: "task-not-found" }),
     };
     const bot = createTelegramBot("123:test-token", core, { botInfo: BOT_INFO });
     // No real Telegram: Bot API calls are recorded and answered locally.
