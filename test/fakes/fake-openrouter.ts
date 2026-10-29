@@ -13,6 +13,11 @@ export type FakeOpenRouter = {
 
 /** A chat-completions response in which the model calls one tool with these arguments. */
 export function toolCall(name: string, args: unknown): ScriptedResponse {
+  return toolCalls([[name, args]]);
+}
+
+/** A chat-completions response in which the model calls several tools at once. */
+export function toolCalls(calls: Array<[name: string, args: unknown]>): ScriptedResponse {
   return {
     status: 200,
     body: {
@@ -21,9 +26,11 @@ export function toolCall(name: string, args: unknown): ScriptedResponse {
           message: {
             role: "assistant",
             content: null,
-            tool_calls: [
-              { id: "call_1", type: "function", function: { name, arguments: JSON.stringify(args) } },
-            ],
+            tool_calls: calls.map(([name, args], index) => ({
+              id: `call_${index + 1}`,
+              type: "function",
+              function: { name, arguments: JSON.stringify(args) },
+            })),
           },
           finish_reason: "tool_calls",
         },

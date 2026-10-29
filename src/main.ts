@@ -17,9 +17,13 @@ async function main() {
   }
 
   const database = await connectDatabase(config.mongo.uri, config.mongo.dbName);
-  await ensureFirstAdmin(database, config.firstAdmin);
+  await ensureFirstAdmin(database, { ...config.firstAdmin, timezone: config.defaultTimezone });
 
-  const core = createCore({ database, llm: createOpenRouter(config.openRouter) });
+  const core = createCore({
+    database,
+    llm: createOpenRouter(config.openRouter),
+    defaultTimezone: config.defaultTimezone,
+  });
   const bot = createTelegramBot(config.telegram.botToken, core);
   try {
     await bot.init();

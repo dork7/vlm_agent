@@ -12,9 +12,9 @@ describe("core: a typed message", () => {
   const openRouter = useFakeOpenRouter();
 
   async function send(message: InboundMessage): Promise<CoreEvent[]> {
-    await ensureFirstAdmin(database(), { username: "owner", password: "pw", telegramId: "42" });
+    await ensureFirstAdmin(database(), { username: "owner", password: "pw", telegramId: "42", timezone: "UTC" });
     const llm = createOpenRouter({ apiKey: "key", baseUrl: openRouter.baseUrl, models: [MODEL] });
-    const core = createCore({ database: database(), llm });
+    const core = createCore({ database: database(), llm, defaultTimezone: "UTC" });
     const events: CoreEvent[] = [];
     await core.handleMessage(message, async (event) => {
       events.push(event);

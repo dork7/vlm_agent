@@ -1,5 +1,8 @@
+import { isValidTimezone } from "./time.ts";
+
 export type Config = {
   port: number;
+  defaultTimezone: string;
   telegram: { botToken: string };
   mongo: { uri: string; dbName: string };
   openRouter: { apiKey: string; baseUrl: string; models: string[] };
@@ -40,8 +43,16 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     throw new ConfigError(`PORT must be a positive integer, got "${env.PORT}"`);
   }
 
+  const defaultTimezone = value("DEFAULT_TIMEZONE") ?? "UTC";
+  if (!isValidTimezone(defaultTimezone)) {
+    throw new ConfigError(
+      `DEFAULT_TIMEZONE must be an IANA timezone such as "Asia/Dubai", got "${defaultTimezone}"`,
+    );
+  }
+
   return {
     port,
+    defaultTimezone,
     telegram: { botToken: required("TELEGRAM_BOT_TOKEN") },
     mongo: { uri: required("MONGODB_URI"), dbName: value("MONGODB_DB") ?? "voice_notes_bot" },
     openRouter: {

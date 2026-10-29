@@ -1,10 +1,10 @@
 import { Bot, type Context } from "grammy";
-import type { Core, CoreEvent, InboundMessage } from "../core/core.ts";
+import type { Core, CoreEvent, Due, InboundMessage } from "../core/core.ts";
 
 const PROCESSING = "processing…";
 const REFUSAL = "Sorry, you're not allowed to use this bot. Please ask its owner for access.";
 const FAILURE = "Sorry, something went wrong processing that. Please try again.";
-const GREETING = "Hi! Type a message and I'll save it as a Note.";
+const GREETING = "Hi! Type a message and I'll save it as a Note or a Task.";
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
 export function createTelegramBot(token: string, core: Core): Bot {
@@ -45,6 +45,8 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
     switch (event.result.kind) {
       case "note-saved":
         return show(`Saved Note: ${event.result.heading}`);
+      case "task-saved":
+        return show(`Saved Task: ${event.result.heading}${formatDue(event.result.due)}`);
       case "refused":
         return show(REFUSAL);
       case "error":
@@ -58,4 +60,17 @@ async function handleTextMessage(ctx: Context & { message: { text: string } }, c
     console.error("Failed to process Telegram message", error);
     await show(FAILURE).catch((replyError) => console.error("Failed to send failure reply", replyError));
   }
+}
+
+/** E.g. " (due Thu 29 Oct 2026, 15:00)", or "" when there is no due date. */
+function formatDue(due: Due): string {
+  if (due === null) return "";
+  const day = new Date(`${due.date}T00:00:00Z`).toLocaleDateString("en-GB", {
+    timeZone: "UTC",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return ` (due ${day.replace(",", "")}${due.time ? `, ${due.time}` : ""})`;
 }

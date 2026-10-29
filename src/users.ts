@@ -25,7 +25,7 @@ export function findUserByChannelIdentity(
 /** On startup with no Users, creates the first admin from configuration. */
 export async function ensureFirstAdmin(
   database: Database,
-  admin: { username: string; password: string; telegramId: string },
+  admin: { username: string; password: string; telegramId: string; timezone: string },
 ): Promise<void> {
   if ((await database.users.countDocuments({}, { limit: 1 })) > 0) return;
 
@@ -33,6 +33,7 @@ export async function ensureFirstAdmin(
     username: admin.username,
     password: hashPassword(admin.password),
     isAdmin: true,
+    timezone: admin.timezone,
     channelIdentities: [{ channel: "telegram", channelId: admin.telegramId }],
     createdAt: new Date(),
   });

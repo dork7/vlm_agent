@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ensureFirstAdmin, findUserByChannelIdentity, verifyPassword } from "../src/users.ts";
 import { useMemoryMongo } from "./fakes/memory-mongo.ts";
 
-const firstAdmin = { username: "owner", password: "s3cret", telegramId: "42" };
+const firstAdmin = { username: "owner", password: "s3cret", telegramId: "42", timezone: "Asia/Dubai" };
 
 describe("first admin on startup", () => {
   const database = useMemoryMongo();
@@ -11,7 +11,7 @@ describe("first admin on startup", () => {
     await ensureFirstAdmin(database(), firstAdmin);
 
     const user = await findUserByChannelIdentity(database(), { channel: "telegram", channelId: "42" });
-    expect(user).toMatchObject({ username: "owner", isAdmin: true });
+    expect(user).toMatchObject({ username: "owner", isAdmin: true, timezone: "Asia/Dubai" });
     expect(verifyPassword(user!, "s3cret")).toBe(true);
     expect(verifyPassword(user!, "wrong")).toBe(false);
   });
@@ -31,7 +31,7 @@ describe("first admin on startup", () => {
 
   it("creates nothing when Users already exist", async () => {
     await ensureFirstAdmin(database(), firstAdmin);
-    await ensureFirstAdmin(database(), { username: "someone-else", password: "x", telegramId: "7" });
+    await ensureFirstAdmin(database(), { ...firstAdmin, username: "someone-else", telegramId: "7" });
 
     expect(await database().users.countDocuments()).toBe(1);
     expect(await findUserByChannelIdentity(database(), { channel: "telegram", channelId: "7" })).toBeNull();

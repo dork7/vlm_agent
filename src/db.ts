@@ -9,6 +9,8 @@ export type UserDoc = {
   username: string;
   password: PasswordHash;
   isAdmin: boolean;
+  /** IANA timezone in which this User's due dates and times are meant; absent means the configured default. */
+  timezone?: string;
   channelIdentities: ChannelIdentity[];
   createdAt: Date;
 };
@@ -24,10 +26,29 @@ export type NoteDoc = {
   updatedAt: Date;
 };
 
+/** When a Task is due: a moment (date with a time), a whole day (date only), or never. */
+export type TaskDue = { kind: "moment"; at: Date } | { kind: "date"; date: string } | null;
+
+export type TaskDoc = {
+  _id?: ObjectId;
+  ownerId: ObjectId;
+  heading: string;
+  description: string;
+  due: TaskDue;
+  status: "open" | "done";
+  reminderSentAt: Date | null;
+  channelIdentity: ChannelIdentity;
+  transcript: string;
+  source: { channel: string; chatId: string; messageId: string };
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type Database = {
   db: Db;
   users: Collection<UserDoc>;
   notes: Collection<NoteDoc>;
+  tasks: Collection<TaskDoc>;
   close(): Promise<void>;
 };
 
@@ -45,6 +66,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
     db,
     users,
     notes: db.collection<NoteDoc>("notes"),
+    tasks: db.collection<TaskDoc>("tasks"),
     close: () => client.close(),
   };
 }

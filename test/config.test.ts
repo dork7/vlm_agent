@@ -32,6 +32,17 @@ describe("startup configuration", () => {
     );
   });
 
+  it("fails on a DEFAULT_TIMEZONE that is not a known timezone", () => {
+    expect(() => loadConfig({ ...completeEnv, DEFAULT_TIMEZONE: "Mars/Olympus" })).toThrow(
+      'DEFAULT_TIMEZONE must be an IANA timezone such as "Asia/Dubai", got "Mars/Olympus"',
+    );
+  });
+
+  it("defaults the timezone to UTC", () => {
+    expect(loadConfig(completeEnv).defaultTimezone).toBe("UTC");
+    expect(loadConfig({ ...completeEnv, DEFAULT_TIMEZONE: "Asia/Dubai" }).defaultTimezone).toBe("Asia/Dubai");
+  });
+
   it("reads a complete environment", () => {
     const config = loadConfig(completeEnv);
 
