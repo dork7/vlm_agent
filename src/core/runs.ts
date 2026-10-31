@@ -23,6 +23,8 @@ export type RunRecorder = {
   set(fields: Partial<Pick<RunDoc, "userId" | "username" | "status" | "clarificationId">>): void;
   /** Records that the message answers a Clarification, so the Run takes no type of its own. */
   answersClarification(): void;
+  /** Records that the message confirms or cancels a change, so the Run takes no type of its own. */
+  answersChange(): void;
   /** Sets the Run's status, and its type, from what the message came to. */
   settle(event: SettlingEvent): void;
   /** Marks the Run failed, blaming the last failed stage, or else the last stage. */
@@ -40,6 +42,7 @@ const RESULT_TYPES: Partial<Record<Result["kind"], RunType>> = {
   "notes-listed": "note-list",
   "command-declined": "command",
   greeted: "greeting",
+  "item-not-found": "change",
 };
 
 /** Saves an in-progress Run for the message straight away, so a Run cut short by a restart still shows. */
@@ -108,9 +111,17 @@ export async function startRun(
     answersClarification() {
       run.content = "clarification-answer";
     },
+    answersChange() {
+      run.content = "change-answer";
+    },
     settle(event) {
       if (event.type === "clarification-needed") {
         run.status = "awaiting-clarification";
+        return;
+      }
+      if (event.type === "change-proposed") {
+        run.status = "succeeded";
+        run.type = run.content === "change-answer" ? null : "change";
         return;
       }
       const { result } = event;
@@ -121,7 +132,8 @@ export async function startRun(
       }
       if (result.kind === "error") return fail();
       run.status = "succeeded";
-      run.type = run.content === "clarification-answer" ? null : (RESULT_TYPES[result.kind] ?? null);
+      const answers = run.content === "clarification-answer" || run.content === "change-answer";
+      run.type = answers ? null : (RESULT_TYPES[result.kind] ?? null);
     },
     fail,
     async finish() {
@@ -135,12 +147,15 @@ export async function startRun(
 }
 
 /** The Llm, with each call recorded as a stage: the first classifies the message, later ones write a Query's answer. */
-export function recordingLlm(recorder: RunRecorder, llm: Llm, handled: Pick<HandledMessage, "modelAttempts">): Llm {
-  let modelCalls = 0;
-  return {
+export function recordingLlm(
+  recorder: RunRecorder,
+  llm: Llm,
+  handled: Pick<HandledMessage, "modelAttempts">,
+): (stage: RunStageName) => Llm {
+  return (stage) => ({
     callTool(request) {
       return recorder.stage(
-        modelCalls++ === 0 ? "classification" : "query-answer",
+        stage,
         async () => {
           try {
             const answer = await llm.callTool(request);
@@ -157,7 +172,7 @@ export function recordingLlm(recorder: RunRecorder, llm: Llm, handled: Pick<Hand
         },
       );
     },
-  };
+  });
 }
 
 /** The Inventory client, with each lookup recorded as a "tool-call" stage. */
