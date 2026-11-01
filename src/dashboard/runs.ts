@@ -88,7 +88,7 @@ async function runTotals(database: Database, timezone: string): Promise<RunTotal
         { $group: { _id: "$stages.name", averageMs: { $avg: "$stages.durationMs" } } },
       ])
       .toArray(),
-    runs.countDocuments({ "stages.name": { $in: ["classification", "query-answer"] } }),
+    runs.countDocuments({ "stages.name": { $in: ["classification", "change-resolution", "query-answer"] } }),
     // A model stage with a second attempt means a model failed and the next in the list was tried.
     runs.countDocuments({ "stages.details.attempts.1": { $exists: true } }),
   ]);
