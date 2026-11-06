@@ -11,6 +11,8 @@ export type Classification =
   /** `date` ("YYYY-MM-DD") limits the list to Tasks due that day on the User's own clock. */
   | { kind: "list-tasks"; date: string | null }
   | { kind: "list-notes" }
+  /** A request to edit, complete, reopen or delete one of the User's Notes or Tasks; which one is resolved next. */
+  | { kind: "change" }
   /** A Query: the model's first Inventory lookup, and the conversation it came from so it can continue. */
   | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
   /** A Command: a request to change Inventory data, which is not supported yet. */
@@ -45,7 +47,8 @@ const SAVE_TASK: Tool = {
     name: "save_task",
     description:
       "Save the message as a Task: something the person intends to do later. " +
-      "Save one Task per message, even when it mentions several things to do.",
+      "Save one Task per message, even when it mentions several things to do. " +
+      "Not for moving or changing a Task they already have.",
     parameters: {
       type: "object",
       properties: {
@@ -102,6 +105,18 @@ const LIST_NOTES: Tool = {
   },
 };
 
+const CHANGE_ITEM: Tool = {
+  type: "function",
+  function: {
+    name: "change_item",
+    description:
+      "Use when the person wants to change one of their existing Notes or Tasks: edit it (such as moving a Task " +
+      'to another day or time, or updating what a Note says), mark a Task done ("I called the supplier") or open ' +
+      "again, or delete one. Not for saving something new.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
 const CHANGE_INVENTORY: Tool = {
   type: "function",
   function: {
@@ -149,6 +164,7 @@ const SYSTEM_PROMPT =
   "save_note for something to remember, save_task for something to do, " +
   "list_tasks when they ask to see their Tasks, " +
   "list_notes when they ask to see their Notes, " +
+  "change_item when they want to edit, complete, reopen or delete one of their Notes or Tasks, " +
   "search_items or get_item when they ask about the Inventory (you will answer once you have the results), " +
   "change_inventory when they ask to change Inventory data, " +
   "greet when it is only a greeting, " +
@@ -161,7 +177,13 @@ const SYSTEM_PROMPT =
 export async function classify(
   llm: Llm,
   transcript: string,
-  context: { today: { date: string; weekday: string }; timezone: string; fixedAs?: ClarificationOption },
+  context: {
+    today: { date: string; weekday: string };
+    timezone: string;
+    fixedAs?: ClarificationOption;
+    /** The headings of the person's own Notes and Tasks, so a message about one of them reads as a change. */
+    existing?: { notes: string[]; tasks: string[] };
+  },
 ): Promise<LlmAnswer<Classification>> {
   const { fixedAs } = context;
   const instructions =
@@ -173,19 +195,29 @@ export async function classify(
       role: "system",
       content:
         `${instructions} Today is ${context.today.weekday} ${context.today.date}, ` +
-        `in the person's timezone ${context.timezone}. Resolve relative dates such as "Thursday" from today.`,
+        `in the person's timezone ${context.timezone}. Resolve relative dates such as "Thursday" from today.` +
+        existingItems(context.existing),
     },
     { role: "user", content: transcript },
   ];
   const tools =
     fixedAs === undefined
-      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, LIST_NOTES, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, GREET, ASK_CLARIFICATION]
+      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, LIST_NOTES, CHANGE_ITEM, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, GREET, ASK_CLARIFICATION]
       : TOOLS_FOR[fixedAs];
   return llm.callTool({
     messages,
     tools,
     read: (call) => readClassification(call, messages, tools),
   });
+}
+
+function existingItems(existing: { notes: string[]; tasks: string[] } | undefined): string {
+  if (!existing || existing.notes.length + existing.tasks.length === 0) return "";
+  const list = (headings: string[]) => (headings.length ? headings.map((heading) => `"${heading}"`).join(", ") : "none");
+  return (
+    `\nThe person already has these Tasks: ${list(existing.tasks)}; and these Notes: ${list(existing.notes)}. ` +
+    "When the message is about changing, completing or deleting one of them, call change_item rather than saving it again."
+  );
 }
 
 /** Throws on an unusable answer, so the next model is tried. */
@@ -207,6 +239,8 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[], off
       return { kind: "list-tasks", date: listedDate(optionalString(args, "date")) };
     case LIST_NOTES.function.name:
       return { kind: "list-notes" };
+    case CHANGE_ITEM.function.name:
+      return { kind: "change" };
     case CHANGE_INVENTORY.function.name:
       return { kind: "command" };
     case GREET.function.name:
@@ -218,7 +252,7 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[], off
   }
 }
 
-function due(date: string | undefined, time: string | undefined): Due {
+export function due(date: string | undefined, time: string | undefined): Due {
   if (date === undefined) {
     if (time !== undefined) throw new Error(`Model gave due_time "${time}" without a due_date`);
     return null;

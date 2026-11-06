@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import type { RouteHandlerMethod } from "fastify";
 import { Bot, InlineKeyboard, webhookCallback, type BotConfig, type Context } from "grammy";
 import type {
+  ChangeAction,
   ClarificationOption,
   Core,
   CoreEvent,
@@ -11,6 +12,7 @@ import type {
   ListedNote,
   ListedTask,
   ReminderEvent,
+  ShownItem,
 } from "../core/core.ts";
 import { formatDay } from "../time.ts";
 
@@ -27,6 +29,23 @@ const CLARIFICATION_BUTTON = /^clarify:([0-9a-f]{24}):(note|task|query)$/;
 /** A tapped Reminder "Done" button's data: `done:<Task ID>`. */
 const DONE_BUTTON = /^done:([0-9a-f]{24})$/;
 const TASK_NOT_FOUND = "Sorry, I couldn't find that Task. It may have been deleted.";
+/** A tapped Confirm or Cancel button under a proposed change: `change:<change ID>:yes|no`. */
+const CHANGE_BUTTON = /^change:([0-9a-f]{24}):(yes|no)$/;
+const ITEM_NOT_FOUND = "Sorry, I couldn't find that Note or Task, so nothing was changed.";
+const CHANGE_CANCELLED = "Cancelled. Nothing was changed.";
+const ITEM_LABELS: Record<ShownItem["kind"], string> = { note: "Note", task: "Task" };
+const CHANGE_QUESTIONS: Record<ChangeAction, (item: string) => string> = {
+  edit: (item) => `Change this ${item}?`,
+  done: (item) => `Mark this ${item} done?`,
+  reopen: (item) => `Reopen this ${item}?`,
+  delete: (item) => `Delete this ${item}?`,
+};
+const CHANGE_DONE: Record<ChangeAction, (item: string, heading: string) => string> = {
+  edit: (item, heading) => `Updated ${item}: ${heading}`,
+  done: (_item, heading) => `Marked done: ${heading}`,
+  reopen: (_item, heading) => `Reopened: ${heading}`,
+  delete: (item, heading) => `Deleted ${item}: ${heading}`,
+};
 const PROCESSED_BY: Record<EventSource["processedBy"], string> = {
   openrouter: "Processed by OpenRouter",
   local: "Processed by local AI",
@@ -36,7 +55,8 @@ const GREETING = [
   "• Save it as a Note, for anything you want to remember",
   '• Save it as a Task, with a due date if you give one ("call the supplier Thursday at 3")',
   "• Send you a Reminder when a Task is due, with a Done button",
-  '• Show your Tasks when you ask, e.g. "show tasks" or "what\'s due tomorrow?"',
+  '• Show your Tasks or Notes when you ask, e.g. "show tasks", "what\'s due tomorrow?" or "show notes"',
+  '• Change, complete or delete a Note or Task, e.g. "move the supplier call to Monday"; I\'ll show it and ask you to confirm first',
   '• Answer questions about the Inventory, e.g. "how many blue mugs do we have?"',
   "You can also see and edit everything on the dashboard.",
 ].join("\n");
@@ -64,6 +84,17 @@ export function createTelegramBot(token: string, core: Core, config?: BotConfig<
     void handleMessage(ctx, core, {
       messageId: `callback:${ctx.callbackQuery.id}`,
       content: { kind: "clarification-answer", clarificationId, answer },
+      // The question's message is edited into the result.
+      replyId: ctx.callbackQuery.message?.message_id,
+    });
+  });
+
+  bot.callbackQuery(CHANGE_BUTTON, (ctx) => {
+    const [, changeId, answer] = ctx.match as [string, string, "yes" | "no"];
+    void ctx.answerCallbackQuery().catch((error) => console.error("Failed to answer a button tap", error));
+    void handleMessage(ctx, core, {
+      messageId: `callback:${ctx.callbackQuery.id}`,
+      content: { kind: "change-answer", changeId, confirm: answer === "yes" },
       // The question's message is edited into the result.
       replyId: ctx.callbackQuery.message?.message_id,
     });
@@ -143,6 +174,12 @@ async function handleMessage(
       for (const option of event.options) buttons.text(OPTION_LABELS[option], `clarify:${event.clarificationId}:${option}`);
       return show(signed(CLARIFICATION_QUESTION), buttons);
     }
+    if (event.type === "change-proposed") {
+      const buttons = new InlineKeyboard()
+        .text(event.action === "delete" ? "Delete" : "Confirm", `change:${event.changeId}:yes`)
+        .text("Cancel", `change:${event.changeId}:no`);
+      return show(signed(formatChange(event.action, event.before, event.after)), buttons);
+    }
     // A reply too long for one Telegram message continues in new ones; the source goes at the very end.
     const pages = resultPages(event.result);
     const last = pages.length - 1;
@@ -178,6 +215,12 @@ function resultText(result: Exclude<Extract<CoreEvent, { type: "result" }>["resu
       return COMMAND_DECLINED;
     case "greeted":
       return GREETING;
+    case "change-applied":
+      return CHANGE_DONE[result.action](ITEM_LABELS[result.itemKind], result.heading);
+    case "change-cancelled":
+      return CHANGE_CANCELLED;
+    case "item-not-found":
+      return ITEM_NOT_FOUND;
     case "voice-too-long":
       return VOICE_TOO_LONG(result.maxSeconds);
     case "refused":
@@ -185,6 +228,18 @@ function resultText(result: Exclude<Extract<CoreEvent, { type: "result" }>["resu
     case "error":
       return FAILURE;
   }
+}
+
+/** A proposed change: the item now and, unless it would be deleted, after. */
+function formatChange(action: ChangeAction, before: ShownItem, after: ShownItem | null): string {
+  const question = CHANGE_QUESTIONS[action](ITEM_LABELS[before.kind]);
+  if (after === null) return `${question}\n\n${formatItem(before)}`;
+  return `${question}\n\nNow:\n${formatItem(before)}\n\nAfter:\n${formatItem(after)}`;
+}
+
+function formatItem(item: ShownItem): string {
+  if (item.kind === "note") return `${item.heading}\n${item.text}`;
+  return `${item.status === "done" ? "✓ " : ""}${item.heading}${formatDue(item.due)}${item.status === "done" ? " (done)" : ""}\n${item.description}`;
 }
 
 /** Fetches a file the User sent from Telegram's file storage. */

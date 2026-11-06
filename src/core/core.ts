@@ -4,7 +4,11 @@ import {
   type ChannelIdentity,
   type ClarificationDoc,
   type ClarificationOption,
+  type ChangeAction,
+  type ChangeDoc,
   type Database,
+  type RunStageName,
+  type ShownItem,
   type TaskDoc,
   type TaskDue,
   type UserDoc,
@@ -14,6 +18,7 @@ import { isLocalModel, type Llm, type ModelAttempt } from "../llm/openrouter.ts"
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
+import { applyChange, choosableItems, planChange, resolveChange } from "./changes.ts";
 import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
 import { answerQuery } from "./query.ts";
@@ -29,7 +34,7 @@ import {
 } from "./runs.ts";
 import { listTasks, setTaskStatus } from "./tasks.ts";
 
-export type { ClarificationOption, DeliverReminder, Due, ReminderEvent };
+export type { ChangeAction, ClarificationOption, DeliverReminder, Due, ReminderEvent, ShownItem };
 
 /** A message from any Channel, in a channel-neutral shape (ADR 0005). */
 export type InboundMessage = {
@@ -40,14 +45,17 @@ export type InboundMessage = {
     | { kind: "text"; text: string }
     | ({ kind: "voice" } & AudioSource)
     /** The User's choice in an earlier Clarification, e.g. a tapped button. */
-    | { kind: "clarification-answer"; clarificationId: string; answer: ClarificationOption };
+    | { kind: "clarification-answer"; clarificationId: string; answer: ClarificationOption }
+    /** The User's answer to a proposed change, e.g. a tapped Confirm or Cancel button. */
+    | { kind: "change-answer"; changeId: string; confirm: boolean };
   clarifyWith: ClarifyWith;
 };
 
 /**
- * How a Channel's Clarifications are answered. With "text", while one is pending for the sender in the chat,
- * a typed reply is taken as its answer ("1/2/3" or the option's name) and anything else asks again.
- * With "buttons", the answer comes as a clarification-answer and typed messages are always new messages.
+ * How a Channel's Clarifications, and confirmations of changes, are answered. With "text", while one is pending
+ * for the sender in the chat, a typed reply is taken as its answer ("1/2/3" or the option's name; "yes" or "no")
+ * and anything else asks again. With "buttons", the answer comes as a clarification-answer or change-answer and
+ * typed messages are always new messages.
  */
 export type ClarifyWith = "buttons" | "text";
 
@@ -71,6 +79,11 @@ export type Result =
   | { kind: "command-declined" }
   /** A greeting; the Channel says hi and what the bot can do. */
   | { kind: "greeted" }
+  /** A confirmed change to one of the User's Notes or Tasks was made. */
+  | { kind: "change-applied"; action: ChangeAction; itemKind: ShownItem["kind"]; heading: string }
+  | { kind: "change-cancelled" }
+  /** No Note or Task of the User's matches the change asked for, or the change is no longer pending. */
+  | { kind: "item-not-found" }
   /** A Voice Message over the 5-minute limit; the User is asked to split it. */
   | { kind: "voice-too-long"; maxSeconds: number }
   | { kind: "refused" }
@@ -86,7 +99,9 @@ export type CoreEvent =
   | { type: "processing-started" }
   | { type: "result"; result: Result }
   /** The message is unclear; the User is asked which option it is. */
-  | { type: "clarification-needed"; clarificationId: string; options: ClarificationOption[] };
+  | { type: "clarification-needed"; clarificationId: string; options: ClarificationOption[] }
+  /** A change the User asked for, shown before (and after, unless a delete) for them to confirm or cancel. */
+  | { type: "change-proposed"; changeId: string; action: ChangeAction; before: ShownItem; after: ShownItem | null };
 
 /** Which model answered for a result or Clarification: one on OpenRouter, or one on the local model server. */
 export type EventSource = { processedBy: "openrouter" | "local" };
@@ -112,7 +127,14 @@ export type HandledMessage = {
 };
 
 /** What every step of handling one message works with. */
-type Handling = { emit: EmitEvent; handled: HandledMessage; llm: Llm; inventory: InventoryClient; recorder: RunRecorder };
+type Handling = {
+  emit: EmitEvent;
+  handled: HandledMessage;
+  /** The model, its calls recorded as the given stage of the Run. */
+  llm: (stage: RunStageName) => Llm;
+  inventory: InventoryClient;
+  recorder: RunRecorder;
+};
 
 export type Core = {
   handleMessage(message: InboundMessage, emit: EmitEvent): Promise<HandledMessage>;
@@ -177,6 +199,10 @@ export function createCore(deps: {
       await answerClarification(user, content.clarificationId, content.answer, message.messageId, handling);
       return;
     }
+    if (content.kind === "change-answer") {
+      await answerChange(user, content.changeId, content.confirm, handling);
+      return;
+    }
     if (message.clarifyWith === "text") {
       const pending = await database.clarifications.findOne(
         {
@@ -193,6 +219,16 @@ export function createCore(deps: {
         const clarificationId = pending._id.toHexString();
         if (answer === null) await askClarification(clarificationId, "re-asked", handling);
         else await answerClarification(user, clarificationId, answer, message.messageId, handling);
+        return;
+      }
+      const pendingChange = await database.changes.findOne(
+        { ownerId: user._id!, "source.channel": message.sender.channel, "source.chatId": message.chatId, status: "pending" },
+        { sort: { createdAt: -1 } },
+      );
+      if (pendingChange) {
+        const confirm = content.kind === "text" ? readConfirmation(content.text) : null;
+        if (confirm === null) await showChange(pendingChange._id, pendingChange, handling);
+        else await answerChange(user, pendingChange._id.toHexString(), confirm, handling);
         return;
       }
     }
@@ -224,6 +260,57 @@ export function createCore(deps: {
 
     const source = { channel: message.sender.channel, chatId: message.chatId, messageId: message.messageId };
     await fileTranscript({ user, sender: message.sender, source, transcript }, handling);
+  };
+
+  /** The headings of the User's most recent Notes and Tasks, for the classifier to recognise a change to one. */
+  const existingHeadings = async (ownerId: ObjectId) => {
+    const recent = { sort: { createdAt: -1 as const }, limit: 50, projection: { heading: 1 } };
+    const [notes, tasks] = await Promise.all([
+      database.notes.find({ ownerId }, recent).toArray(),
+      database.tasks.find({ ownerId }, recent).toArray(),
+    ]);
+    return { notes: notes.map((note) => note.heading), tasks: tasks.map((task) => task.heading) };
+  };
+
+  /** Asks the User to confirm a change (again, on a text Channel whose reply wasn't a yes or no). */
+  const showChange = (changeId: ObjectId, change: Pick<ChangeDoc, "action" | "before" | "after">, handling: Handling) =>
+    handling.emit({
+      type: "change-proposed",
+      changeId: changeId.toHexString(),
+      action: change.action,
+      before: change.before,
+      after: change.after,
+    });
+
+  /** Makes a pending change once the User confirms it, or drops it; a change is answered only once, by its owner. */
+  const answerChange = async (user: UserDoc, changeId: string, confirm: boolean, handling: Handling) => {
+    handling.recorder.answersChange();
+    const change = ObjectId.isValid(changeId)
+      ? await database.changes.findOneAndUpdate(
+          { _id: new ObjectId(changeId), ownerId: user._id!, status: "pending" },
+          { $set: { status: confirm ? "confirmed" : "cancelled", answeredAt: now() } },
+          { returnDocument: "after" },
+        )
+      : null;
+    if (!change) {
+      await handling.emit({ type: "result", result: { kind: "item-not-found" } });
+      return;
+    }
+    if (!confirm) {
+      await handling.emit({ type: "result", result: { kind: "change-cancelled" } });
+      return;
+    }
+    await handling.emit({ type: "processing-started" });
+    const heading = await applyChange(database, change, now);
+    if (heading === null) {
+      await handling.emit({ type: "result", result: { kind: "item-not-found" } });
+      return;
+    }
+    await refreshMarkdownCopies(user, user.timezone ?? defaultTimezone);
+    await handling.emit({
+      type: "result",
+      result: { kind: "change-applied", action: change.action, itemKind: change.itemKind, heading },
+    });
   };
 
   const askClarification = async (clarificationId: string, outcome: "asked" | "re-asked", handling: Handling) => {
@@ -290,7 +377,13 @@ export function createCore(deps: {
     const timezone = user.timezone ?? defaultTimezone;
     let classification;
     try {
-      ({ value: classification } = await classify(llm, transcript, { today: todayIn(now(), timezone), timezone, fixedAs }));
+      const existing = fixedAs === undefined ? await existingHeadings(user._id!) : undefined;
+      ({ value: classification } = await classify(llm("classification"), transcript, {
+        today: todayIn(now(), timezone),
+        timezone,
+        fixedAs,
+        ...(existing ? { existing } : {}),
+      }));
     } catch (error) {
       console.error("Classification failed", error);
       await emit({ type: "result", result: { kind: "error" } });
@@ -300,7 +393,7 @@ export function createCore(deps: {
     if (classification.kind === "query") {
       let answer;
       try {
-        answer = await answerQuery({ llm, inventory, ...classification });
+        answer = await answerQuery({ llm: llm("query-answer"), inventory, ...classification });
       } catch (error) {
         console.error("Answering the Query failed", error);
         await emit({ type: "result", result: { kind: "error" } });
@@ -340,6 +433,44 @@ export function createCore(deps: {
       const { date } = classification;
       const { tasks, more } = await listTasks(database, user._id!, timezone, date);
       await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
+      return true;
+    }
+
+    if (classification.kind === "change") {
+      const items = await choosableItems(database, user._id!);
+      let proposal;
+      try {
+        ({ value: proposal } = await resolveChange(llm("change-resolution"), transcript, items, {
+          today: todayIn(now(), timezone),
+          timezone,
+        }));
+      } catch (error) {
+        console.error("Resolving the change failed", error);
+        await emit({ type: "result", result: { kind: "error" } });
+        return false;
+      }
+      const note = proposal && items.notes.find((candidate) => candidate._id!.toHexString() === proposal.itemId);
+      const task = proposal && items.tasks.find((candidate) => candidate._id!.toHexString() === proposal.itemId);
+      // Only a Task can be marked done or reopened.
+      if (!proposal || !(task || (note && (proposal.action === "edit" || proposal.action === "delete")))) {
+        await emit({ type: "result", result: { kind: "item-not-found" } });
+        return true;
+      }
+      const item = task ? ({ kind: "task", task } as const) : ({ kind: "note", note: note! } as const);
+      const change: ChangeDoc = {
+        ownerId: user._id!,
+        sender,
+        source,
+        itemKind: item.kind,
+        itemId: task ? task._id! : note!._id!,
+        action: proposal.action,
+        ...planChange(proposal, item, timezone),
+        status: "pending",
+        createdAt: now(),
+        answeredAt: null,
+      };
+      const { insertedId } = await database.changes.insertOne(change);
+      await showChange(insertedId, change, handling);
       return true;
     }
 
@@ -447,6 +578,14 @@ function storedDue(due: Due, timezone: string): TaskDue {
   if (due === null) return null;
   if (due.time === undefined) return { kind: "date", date: due.date };
   return { kind: "moment", at: wallClockToInstant(due.date, due.time, timezone) };
+}
+
+/** A typed answer to a proposed change: true for yes, false for no, or null when it is neither. */
+function readConfirmation(text: string): boolean | null {
+  const reply = text.trim().toLowerCase().replace(/[.!]+$/, "");
+  if (["yes", "y", "confirm", "ok", "okay", "sure"].includes(reply)) return true;
+  if (["no", "n", "cancel", "stop"].includes(reply)) return false;
+  return null;
 }
 
 /** A typed answer to a Clarification: an option's number or name, or null when it is neither. */

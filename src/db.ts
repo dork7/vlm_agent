@@ -74,11 +74,46 @@ export type ClarificationDoc = {
   answeredAt: Date | null;
 };
 
-/** The stages of a Run (ADR 0003), in the order they can happen. "query-answer" is a model call after a Query's lookups. */
+/** What a change from the chat does to one Note or Task. */
+export type ChangeAction = "edit" | "done" | "reopen" | "delete";
+
+/** A Note or Task as shown when confirming a change; a Task's `due` is on its owner's own clock. */
+export type ShownItem =
+  | { kind: "note"; heading: string; text: string }
+  | { kind: "task"; heading: string; description: string; due: { date: string; time?: string } | null; status: TaskDoc["status"] };
+
+/**
+ * A change to one of the User's Notes or Tasks asked for in the chat. Nothing happens until the User
+ * confirms it; it is then applied once, or cancelled.
+ */
+export type ChangeDoc = {
+  _id?: ObjectId;
+  ownerId: ObjectId;
+  sender: ChannelIdentity;
+  /** The message that asked for the change. */
+  source: { channel: string; chatId: string; messageId: string };
+  itemKind: "note" | "task";
+  itemId: ObjectId;
+  action: ChangeAction;
+  /** The new values an edit sets; a Task's due date is stored as on the Task. */
+  set: { heading?: string; text?: string; description?: string; due?: TaskDue };
+  /** The item as shown when the change was proposed, and as it would be after (null for a delete). */
+  before: ShownItem;
+  after: ShownItem | null;
+  status: "pending" | "confirmed" | "cancelled";
+  createdAt: Date;
+  answeredAt: Date | null;
+};
+
+/**
+ * The stages of a Run (ADR 0003), in the order they can happen. "change-resolution" is a model call that picks the
+ * item a change from the chat is about; "query-answer" is a model call after a Query's lookups.
+ */
 export const RUN_STAGES = [
   "received",
   ...TRANSCRIPTION_STAGES,
   "classification",
+  "change-resolution",
   "tool-call",
   "query-answer",
   "reply",
@@ -100,7 +135,7 @@ export type RunStage = {
 export type RunStatus = "in-progress" | "succeeded" | "failed" | "awaiting-clarification" | "refused";
 
 /** What the message turned out to be. */
-export type RunType = "note" | "task" | "query" | "task-list" | "note-list" | "command" | "greeting";
+export type RunType = "note" | "task" | "query" | "task-list" | "note-list" | "change" | "command" | "greeting";
 
 /** One pass of one inbound message through the bot, from arrival to the final reply. */
 export type RunDoc = {
@@ -108,15 +143,15 @@ export type RunDoc = {
   sender: ChannelIdentity;
   chatId: string;
   messageId: string;
-  /** What arrived; a typed reply that answers a Clarification is a "clarification-answer". */
-  content: "text" | "voice" | "clarification-answer";
+  /** What arrived; a reply that answers a Clarification, or confirms or cancels a change, is counted as that. */
+  content: "text" | "voice" | "clarification-answer" | "change-answer";
   /** The User who sent it; null when the sender was refused. */
   userId: ObjectId | null;
   username: string | null;
   status: RunStatus;
   /**
-   * What the message turned out to be. A Clarification answer has none: the Run that asked the
-   * Clarification takes the type, so the message is counted once.
+   * What the message turned out to be. A Clarification answer, or a change's confirmation, has none: the Run
+   * that asked for it takes the type, so the message is counted once.
    */
   type: RunType | null;
   /** The Clarification this Run asked, asked again, or answered. */
@@ -136,6 +171,7 @@ export type Database = {
   tasks: Collection<TaskDoc>;
   processedMessages: Collection<ProcessedMessageDoc>;
   clarifications: Collection<ClarificationDoc>;
+  changes: Collection<ChangeDoc>;
   /** One per inbound message (ADR 0003). */
   runs: Collection<RunDoc>;
   close(): Promise<void>;
@@ -157,6 +193,9 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
   const clarifications = db.collection<ClarificationDoc>("clarifications");
   await clarifications.createIndex({ ownerId: 1, "source.channel": 1, "source.chatId": 1, status: 1 });
 
+  const changes = db.collection<ChangeDoc>("changes");
+  await changes.createIndex({ ownerId: 1, "source.channel": 1, "source.chatId": 1, status: 1 });
+
   const tasks = db.collection<TaskDoc>("tasks");
   // The Reminder check every minute looks for open Tasks not yet reminded.
   await tasks.createIndex({ status: 1, reminderSentAt: 1 });
@@ -173,6 +212,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
     tasks,
     processedMessages,
     clarifications,
+    changes,
     runs,
     close: () => client.close(),
   };

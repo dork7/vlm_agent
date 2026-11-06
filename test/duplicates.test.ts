@@ -68,6 +68,8 @@ describe("core: a message delivered more than once", () => {
   it("is handled once when both deliveries arrive at the same time", async () => {
     openRouter.script(MODEL, toolCall("save_note", { heading: "Dentist's new number" }));
     openRouter.script(MODEL, toolCall("save_note", { heading: "Should not be asked" }));
+    // The admin exists before both deliveries race, as it would on a running app.
+    await ensureFirstAdmin(database(), { username: "owner", password: "pw", telegramId: "42", timezone: "UTC" });
 
     const results = await Promise.all([deliver(message()), deliver(message())]);
 
