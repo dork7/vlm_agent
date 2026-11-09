@@ -12,6 +12,7 @@ import type {
   ListedNote,
   ListedTask,
   ReminderEvent,
+  ResearchSources,
   ShownItem,
 } from "../core/core.ts";
 import { formatDay } from "../time.ts";
@@ -58,6 +59,7 @@ const GREETING = [
   '• Show your Tasks or Notes when you ask, e.g. "show tasks", "what\'s due tomorrow?" or "show notes"',
   '• Change, complete or delete a Note or Task, e.g. "move the supplier call to Monday"; I\'ll show it and ask you to confirm first',
   '• Answer questions about the Inventory, e.g. "how many blue mugs do we have?"',
+  '• Research anything on the web and in your own Notes and Tasks, e.g. "find out the VAT rate on exports"',
   "You can also see and edit everything on the dashboard.",
 ].join("\n");
 
@@ -211,6 +213,8 @@ function resultText(result: Exclude<Extract<CoreEvent, { type: "result" }>["resu
       return formatTaskList(result.tasks, result.more, result.date);
     case "query-answered":
       return result.answer;
+    case "researched":
+      return formatResearch(result.answer, result.sources);
     case "command-declined":
       return COMMAND_DECLINED;
     case "greeted":
@@ -277,6 +281,19 @@ function formatNoteList(notes: ListedNote[]): string[] {
     else pages.push(block);
   }
   return pages;
+}
+
+/** The answer, then its sources, cut to leave room under Telegram's 4096-character limit for the source line. */
+function formatResearch(answer: string, sources: ResearchSources): string {
+  const lines = [
+    ...sources.web.map((page) => (page.title === page.url ? `• ${page.url}` : `• ${page.title}: ${page.url}`)),
+    ...sources.items.map((item) => `• Your ${ITEM_LABELS[item.kind]}: ${item.heading}`),
+  ];
+  const listed = lines.length === 0 ? "" : `\n\nSources:\n${lines.join("\n")}`;
+  const limit = 4000;
+  const room = Math.max(limit - listed.length, 500);
+  const text = answer.length > room ? `${answer.slice(0, room - 1)}…` : answer;
+  return `${text}${listed}`.slice(0, limit);
 }
 
 function formatTaskList(tasks: ListedTask[], more: number, date: string | null): string {

@@ -107,7 +107,8 @@ export type ChangeDoc = {
 
 /**
  * The stages of a Run (ADR 0003), in the order they can happen. "change-resolution" is a model call that picks the
- * item a change from the chat is about; "query-answer" is a model call after a Query's lookups.
+ * item a change from the chat is about; "query-answer" is a model call after a Query's lookups;
+ * "research" is the model call, with web search when asked, that answers a Research question.
  */
 export const RUN_STAGES = [
   "received",
@@ -116,6 +117,7 @@ export const RUN_STAGES = [
   "change-resolution",
   "tool-call",
   "query-answer",
+  "research",
   "reply",
 ] as const;
 
@@ -135,7 +137,7 @@ export type RunStage = {
 export type RunStatus = "in-progress" | "succeeded" | "failed" | "awaiting-clarification" | "refused";
 
 /** What the message turned out to be. */
-export type RunType = "note" | "task" | "query" | "task-list" | "note-list" | "change" | "command" | "greeting";
+export type RunType = "note" | "task" | "query" | "task-list" | "note-list" | "change" | "command" | "greeting" | "research";
 
 /** One pass of one inbound message through the bot, from arrival to the final reply. */
 export type RunDoc = {

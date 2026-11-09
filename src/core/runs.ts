@@ -1,7 +1,7 @@
 import type { ObjectId } from "mongodb";
 import type { Database, RunDoc, RunStageName, RunType } from "../db.ts";
 import type { InventoryClient } from "../inventory/client.ts";
-import { AllModelsFailedError, type Llm } from "../llm/openrouter.ts";
+import { AllModelsFailedError, type Llm, type LlmAnswer } from "../llm/openrouter.ts";
 import type { TimeStage } from "../transcriber/transcriber.ts";
 import type { CoreEvent, EmitEvent, HandledMessage, Result } from "./core.ts";
 
@@ -38,6 +38,7 @@ const RESULT_TYPES: Partial<Record<Result["kind"], RunType>> = {
   "note-saved": "note",
   "task-saved": "task",
   "query-answered": "query",
+  researched: "research",
   "tasks-listed": "task-list",
   "notes-listed": "note-list",
   "command-declined": "command",
@@ -146,19 +147,20 @@ export async function startRun(
   };
 }
 
-/** The Llm, with each call recorded as a stage: the first classifies the message, later ones write a Query's answer. */
+/** The Llm, with each call recorded as the given stage, along with every model attempt it made. */
 export function recordingLlm(
   recorder: RunRecorder,
   llm: Llm,
   handled: Pick<HandledMessage, "modelAttempts">,
 ): (stage: RunStageName) => Llm {
-  return (stage) => ({
-    callTool(request) {
-      return recorder.stage(
+  const recorded =
+    (stage: RunStageName) =>
+    <T>(call: () => Promise<LlmAnswer<T>>): Promise<LlmAnswer<T>> =>
+      recorder.stage(
         stage,
         async () => {
           try {
-            const answer = await llm.callTool(request);
+            const answer = await call();
             handled.modelAttempts.push(...answer.attempts);
             return answer;
           } catch (error) {
@@ -171,7 +173,9 @@ export function recordingLlm(
           detailsOnError: (error) => (error instanceof AllModelsFailedError ? { attempts: error.attempts } : {}),
         },
       );
-    },
+  return (stage) => ({
+    callTool: (request) => recorded(stage)(() => llm.callTool(request)),
+    answer: (request) => recorded(stage)(() => llm.answer(request)),
   });
 }
 

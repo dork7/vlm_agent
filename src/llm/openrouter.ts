@@ -39,7 +39,18 @@ export type Llm = {
    * answer `read` accepts. `read` throws on an unusable answer, which moves on to the next model.
    */
   callTool<T>(request: { messages: ChatMessage[]; tools: Tool[]; read: (call: MadeToolCall) => T }): Promise<LlmAnswer<T>>;
+  /**
+   * Asks each model in turn for a written answer. With `web`, OpenRouter's web search plugin adds search results
+   * to the request and the answer comes back with the pages it cited; only OpenRouter models are tried, since the
+   * local model server has no web search.
+   */
+  answer(request: { messages: ChatMessage[]; web: boolean }): Promise<LlmAnswer<WrittenAnswer>>;
 };
+
+/** A model's answer in plain text, and the web pages it cited (none without web search). */
+export type WrittenAnswer = { text: string; citations: Citation[] };
+
+export type Citation = { url: string; title: string };
 
 export type LlmAnswer<T> = { value: T; attempts: ModelAttempt[] };
 
@@ -56,6 +67,8 @@ const REQUEST_TIMEOUT_MS = 60_000;
  * account balance, so a small balance refuses every request.
  */
 const MAX_ANSWER_TOKENS = 1024;
+/** How many web search results OpenRouter's web plugin adds to a request. */
+const WEB_RESULTS = 5;
 /** A local model may first have to load, which takes longer than a hosted one answering. */
 const LOCAL_REQUEST_TIMEOUT_MS = 180_000;
 /** Local models whose names say they can't chat: embedding, audio, speech and image models. */
@@ -78,6 +91,24 @@ export function createOpenRouter(config: {
   const openRouter: Endpoint = { name: "OpenRouter", baseUrl: config.baseUrl, apiKey: config.apiKey, timeoutMs: REQUEST_TIMEOUT_MS };
 
   /** `usage` is filled in as soon as the response arrives, so it is known even when the answer is unusable. */
+  const request = async (endpoint: Endpoint, body: Record<string, unknown>, usage: Usage): Promise<CompletionMessage> => {
+    const response = await fetch(`${endpoint.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ...body, max_tokens: MAX_ANSWER_TOKENS }),
+      signal: AbortSignal.timeout(endpoint.timeoutMs),
+    });
+    if (!response.ok) {
+      throw new Error(`${endpoint.name} ${body.model} responded ${response.status}: ${await response.text()}`);
+    }
+    const reply = (await response.json()) as { choices?: Array<{ message?: CompletionMessage }>; usage?: ReportedUsage };
+    Object.assign(usage, readUsage(reply.usage));
+    return reply.choices?.[0]?.message ?? {};
+  };
+
   const requestToolCall = async (
     endpoint: Endpoint,
     model: string,
@@ -85,25 +116,8 @@ export function createOpenRouter(config: {
     tools: Tool[],
     usage: Usage,
   ): Promise<MadeToolCall> => {
-    const response = await fetch(`${endpoint.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ model, messages, tools, tool_choice: "required", max_tokens: MAX_ANSWER_TOKENS }),
-      signal: AbortSignal.timeout(endpoint.timeoutMs),
-    });
-    if (!response.ok) {
-      throw new Error(`${endpoint.name} ${model} responded ${response.status}: ${await response.text()}`);
-    }
-
-    const body = (await response.json()) as {
-      choices?: Array<{ message?: { tool_calls?: Array<{ id?: string; function?: ToolCall }> } }>;
-      usage?: ReportedUsage;
-    };
-    Object.assign(usage, readUsage(body.usage));
-    const made = body.choices?.[0]?.message?.tool_calls?.[0];
+    const message = await request(endpoint, { model, messages, tools, tool_choice: "required" }, usage);
+    const made = message.tool_calls?.[0];
     const call = made?.function;
     if (!call?.name || typeof call.arguments !== "string") {
       throw new Error(`${endpoint.name} ${model} did not call a tool`);
@@ -111,43 +125,97 @@ export function createOpenRouter(config: {
     return { id: made?.id || "call_0", name: call.name, arguments: call.arguments };
   };
 
-  return {
-    async callTool({ messages, tools, read }) {
-      const attempts: ModelAttempt[] = [];
-      /** Tries one model, recording the attempt as `label`; the answer, or undefined when it failed. */
-      const attempt = async (endpoint: Endpoint, model: string, label: string) => {
-        const usage: Usage = {};
-        try {
-          const value = read(await requestToolCall(endpoint, model, messages, tools, usage));
-          attempts.push({ model: label, outcome: "succeeded", ...usage });
-          return { value };
-        } catch (error) {
-          attempts.push({ model: label, outcome: "failed", reason: errorText(error), ...usage });
-          return undefined;
-        }
-      };
+  const requestAnswer = async (
+    endpoint: Endpoint,
+    model: string,
+    messages: ChatMessage[],
+    web: boolean,
+    usage: Usage,
+  ): Promise<WrittenAnswer> => {
+    const message = await request(
+      endpoint,
+      { model, messages, ...(web ? { plugins: [{ id: "web", max_results: WEB_RESULTS }] } : {}) },
+      usage,
+    );
+    const text = typeof message.content === "string" ? message.content.trim() : "";
+    if (!text) throw new Error(`${endpoint.name} ${model} gave no answer`);
+    return { text, citations: readCitations(message.annotations) };
+  };
 
-      for (const model of config.models) {
-        const answer = await attempt(openRouter, model, model);
+  /**
+   * Tries each OpenRouter model, then, with `local` configured and allowed, each local chat model, until `ask`
+   * gives an answer; throws AllModelsFailedError carrying every attempt when none does.
+   */
+  const firstAnswer = async <T>(
+    ask: (endpoint: Endpoint, model: string, usage: Usage) => Promise<T>,
+    allowLocal: boolean,
+  ): Promise<LlmAnswer<T>> => {
+    const attempts: ModelAttempt[] = [];
+    /** Tries one model, recording the attempt as `label`; the answer, or undefined when it failed. */
+    const attempt = async (endpoint: Endpoint, model: string, label: string) => {
+      const usage: Usage = {};
+      try {
+        const value = await ask(endpoint, model, usage);
+        attempts.push({ model: label, outcome: "succeeded", ...usage });
+        return { value };
+      } catch (error) {
+        attempts.push({ model: label, outcome: "failed", reason: errorText(error), ...usage });
+        return undefined;
+      }
+    };
+
+    for (const model of config.models) {
+      const answer = await attempt(openRouter, model, model);
+      if (answer) return { value: answer.value, attempts };
+    }
+
+    if (config.local && allowLocal) {
+      const local: Endpoint = { name: "Local model server", baseUrl: config.local.baseUrl, timeoutMs: LOCAL_REQUEST_TIMEOUT_MS };
+      let models: string[] = [];
+      try {
+        models = (await listModels(local)).filter((model) => !NOT_CHAT.test(model));
+      } catch (error) {
+        attempts.push({ model: "local", outcome: "failed", reason: errorText(error) });
+      }
+      for (const model of models) {
+        const answer = await attempt(local, model, `local/${model}`);
         if (answer) return { value: answer.value, attempts };
       }
+    }
+    throw new AllModelsFailedError(attempts);
+  };
 
-      if (config.local) {
-        const local: Endpoint = { name: "Local model server", baseUrl: config.local.baseUrl, timeoutMs: LOCAL_REQUEST_TIMEOUT_MS };
-        let models: string[] = [];
-        try {
-          models = (await listModels(local)).filter((model) => !NOT_CHAT.test(model));
-        } catch (error) {
-          attempts.push({ model: "local", outcome: "failed", reason: errorText(error) });
-        }
-        for (const model of models) {
-          const answer = await attempt(local, model, `local/${model}`);
-          if (answer) return { value: answer.value, attempts };
-        }
-      }
-      throw new AllModelsFailedError(attempts);
+  return {
+    callTool({ messages, tools, read }) {
+      return firstAnswer(
+        async (endpoint, model, usage) => read(await requestToolCall(endpoint, model, messages, tools, usage)),
+        true,
+      );
+    },
+    answer({ messages, web }) {
+      return firstAnswer((endpoint, model, usage) => requestAnswer(endpoint, model, messages, web, usage), !web);
     },
   };
+}
+
+/** The assistant message of a chat-completions response, as it arrives: any of it may be missing. */
+type CompletionMessage = {
+  content?: unknown;
+  tool_calls?: Array<{ id?: string; function?: ToolCall }>;
+  annotations?: unknown;
+};
+
+/** The web pages an answer cited, from OpenRouter's `url_citation` annotations, each page once. */
+function readCitations(annotations: unknown): Citation[] {
+  if (!Array.isArray(annotations)) return [];
+  const citations: Citation[] = [];
+  for (const annotation of annotations as Array<{ type?: unknown; url_citation?: { url?: unknown; title?: unknown } }>) {
+    const { url, title } = annotation?.url_citation ?? {};
+    if (annotation?.type !== "url_citation" || typeof url !== "string" || !url) continue;
+    if (citations.some((citation) => citation.url === url)) continue;
+    citations.push({ url, title: typeof title === "string" && title.trim() ? title.trim() : url });
+  }
+  return citations;
 }
 
 /** Whether an attempt's model is one of the local server's, rather than OpenRouter's. */

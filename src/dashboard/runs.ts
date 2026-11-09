@@ -16,6 +16,7 @@ const COUNTED_TYPES: Array<[RunType, string]> = [
   ["note", "Note"],
   ["task", "Task"],
   ["query", "Query"],
+  ["research", "Research"],
 ];
 
 /** The observability dashboard (ADR 0003): admins only, since Runs show every User's messages. */

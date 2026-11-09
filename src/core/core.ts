@@ -14,7 +14,7 @@ import {
   type UserDoc,
 } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
-import { isLocalModel, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
+import { AllModelsFailedError, isLocalModel, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
@@ -22,6 +22,7 @@ import { applyChange, choosableItems, planChange, resolveChange } from "./change
 import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
 import { answerQuery } from "./query.ts";
+import { research, type ResearchSources } from "./research.ts";
 import { sendDueReminders, type DeliverReminder, type ReminderEvent } from "./reminders.ts";
 import {
   errorMessage,
@@ -34,7 +35,7 @@ import {
 } from "./runs.ts";
 import { listTasks, setTaskStatus } from "./tasks.ts";
 
-export type { ChangeAction, ClarificationOption, DeliverReminder, Due, ReminderEvent, ShownItem };
+export type { ChangeAction, ClarificationOption, DeliverReminder, Due, ReminderEvent, ResearchSources, ShownItem };
 
 /** A message from any Channel, in a channel-neutral shape (ADR 0005). */
 export type InboundMessage = {
@@ -75,6 +76,8 @@ export type Result =
   | { kind: "notes-listed"; notes: ListedNote[] }
   /** A plain-language answer to a Query about the Inventory. */
   | { kind: "query-answered"; answer: string }
+  /** A Research answer, and the web pages and the User's own Notes and Tasks it drew on. */
+  | { kind: "researched"; answer: string; sources: ResearchSources }
   /** A Command: changing Inventory data is not supported yet. */
   | { kind: "command-declined" }
   /** A greeting; the Channel says hi and what the bot can do. */
@@ -400,6 +403,37 @@ export function createCore(deps: {
         return false;
       }
       await emit({ type: "result", result: { kind: "query-answered", answer } });
+      return true;
+    }
+
+    if (classification.kind === "research") {
+      const { question, web } = classification;
+      let researched;
+      try {
+        // Its own stage, so the Run shows what was searched and found as well as the model attempts.
+        researched = await handling.recorder.stage(
+          "research",
+          async () => {
+            try {
+              const value = await research({ llm: deps.llm, database, ownerId: user._id!, question, web, today: todayIn(now(), timezone) });
+              handling.handled.modelAttempts.push(...value.attempts);
+              return value;
+            } catch (error) {
+              if (error instanceof AllModelsFailedError) handling.handled.modelAttempts.push(...error.attempts);
+              throw error;
+            }
+          },
+          {
+            details: (value) => ({ web, matches: value.matches, webSources: value.sources.web.length, attempts: value.attempts }),
+            detailsOnError: (error) => ({ web, ...(error instanceof AllModelsFailedError ? { attempts: error.attempts } : {}) }),
+          },
+        );
+      } catch (error) {
+        console.error("Research failed", error);
+        await emit({ type: "result", result: { kind: "error" } });
+        return false;
+      }
+      await emit({ type: "result", result: { kind: "researched", answer: researched.answer, sources: researched.sources } });
       return true;
     }
 

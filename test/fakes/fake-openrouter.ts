@@ -41,6 +41,29 @@ export function toolCalls(calls: Array<[name: string, args: unknown]>): Scripted
   };
 }
 
+/** A chat-completions response in which the model answers in text, citing web pages as OpenRouter's web plugin does. */
+export function textAnswer(content: string, citations: Array<{ url: string; title: string }> = []): ScriptedResponse {
+  return {
+    status: 200,
+    body: {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content,
+            annotations: citations.map(({ url, title }) => ({
+              type: "url_citation",
+              url_citation: { url, title, content: "", start_index: 0, end_index: 0 },
+            })),
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 500, completion_tokens: 60, total_tokens: 560, cost: 0.0123 },
+    },
+  };
+}
+
 /** A fake OpenRouter on a random local port, serving scripted responses per model. */
 export function useFakeOpenRouter(): FakeOpenRouter {
   const queues = new Map<string, ScriptedResponse[]>();

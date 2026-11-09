@@ -17,6 +17,8 @@ export type Classification =
   | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
   /** A Command: a request to change Inventory data, which is not supported yet. */
   | { kind: "command" }
+  /** Research: a question to look up, on the web when `web`, and in the User's own Notes and Tasks. */
+  | { kind: "research"; question: string; web: boolean }
   /** A greeting such as "hi", answered by saying what the bot can do. */
   | { kind: "greeting" }
   /** The model can't tell whether the message is a Note, Task or Query, so a Clarification is asked. */
@@ -128,6 +130,30 @@ const CHANGE_INVENTORY: Tool = {
   },
 };
 
+const RESEARCH: Tool = {
+  type: "function",
+  function: {
+    name: "research",
+    description:
+      "Use when the person asks you to find out, look up or search for something that isn't in the Inventory, " +
+      'such as "find out the VAT rate on exports" or "what did I note about the supplier?". ' +
+      "The answer is looked up on the web and in their own Notes and Tasks.",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "What to find out, as a clear, self-contained question." },
+        web: {
+          type: "boolean",
+          description:
+            "true to search the web. false only when they ask solely about what they have saved in their own Notes or Tasks.",
+        },
+      },
+      required: ["question", "web"],
+      additionalProperties: false,
+    },
+  },
+};
+
 const GREET: Tool = {
   type: "function",
   function: {
@@ -167,6 +193,7 @@ const SYSTEM_PROMPT =
   "change_item when they want to edit, complete, reopen or delete one of their Notes or Tasks, " +
   "search_items or get_item when they ask about the Inventory (you will answer once you have the results), " +
   "change_inventory when they ask to change Inventory data, " +
+  "research when they ask you to find out, look up or search for something that isn't in the Inventory, " +
   "greet when it is only a greeting, " +
   "ask_clarification only when you can't tell whether it is a Note, a Task or a Query.";
 
@@ -202,7 +229,7 @@ export async function classify(
   ];
   const tools =
     fixedAs === undefined
-      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, LIST_NOTES, CHANGE_ITEM, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, GREET, ASK_CLARIFICATION]
+      ? [SAVE_NOTE, SAVE_TASK, LIST_TASKS, LIST_NOTES, CHANGE_ITEM, SEARCH_ITEMS, GET_ITEM, CHANGE_INVENTORY, RESEARCH, GREET, ASK_CLARIFICATION]
       : TOOLS_FOR[fixedAs];
   return llm.callTool({
     messages,
@@ -243,6 +270,11 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[], off
       return { kind: "change" };
     case CHANGE_INVENTORY.function.name:
       return { kind: "command" };
+    case RESEARCH.function.name: {
+      const web = args.web;
+      if (typeof web !== "boolean") throw new Error('Model gave a non-boolean "web"');
+      return { kind: "research", question: requiredString(args, "question"), web };
+    }
     case GREET.function.name:
       return { kind: "greeting" };
     case ASK_CLARIFICATION.function.name:
