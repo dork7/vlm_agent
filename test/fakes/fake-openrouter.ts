@@ -6,8 +6,8 @@ type ScriptedResponse = { status: number; body: unknown };
 
 export type FakeOpenRouter = {
   baseUrl: string;
-  /** Queue a response for the next request made to this model. */
-  script(model: string, response: ScriptedResponse): void;
+  /** Queue a response for the next request made to this model; a function answers from the request's body. */
+  script(model: string, response: ScriptedResponse | ((body: any) => ScriptedResponse)): void;
   requests: Array<{ model: string; body: any }>;
   /** The model IDs `GET /models` lists; null makes it respond 500. */
   models: string[] | null;
@@ -66,7 +66,7 @@ export function textAnswer(content: string, citations: Array<{ url: string; titl
 
 /** A fake OpenRouter on a random local port, serving scripted responses per model. */
 export function useFakeOpenRouter(): FakeOpenRouter {
-  const queues = new Map<string, ScriptedResponse[]>();
+  const queues = new Map<string, Array<ScriptedResponse | ((body: any) => ScriptedResponse)>>();
   let server: Server;
 
   const fake: FakeOpenRouter = {
@@ -90,7 +90,8 @@ export function useFakeOpenRouter(): FakeOpenRouter {
       const body = JSON.parse(raw);
       fake.requests.push({ model: body.model, body });
 
-      const next = queues.get(body.model)?.shift() ?? {
+      const queued = queues.get(body.model)?.shift();
+      const next = (typeof queued === "function" ? queued(body) : queued) ?? {
         status: 500,
         body: { error: { message: `fake OpenRouter has nothing scripted for ${body.model}` } },
       };

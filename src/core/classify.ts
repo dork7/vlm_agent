@@ -1,6 +1,7 @@
 import type { ClarificationOption } from "../db.ts";
-import type { ChatMessage, Llm, LlmAnswer, MadeToolCall, Tool } from "../llm/openrouter.ts";
+import type { ChatMessage, LlmAnswer, MadeToolCall, Tool, ToolCalling } from "../llm/openrouter.ts";
 import { GET_ITEM, type InventoryToolCall, isInventoryToolCall, readInventoryToolCall, SEARCH_ITEMS } from "./query.ts";
+import type { ResearchRequest } from "./research.ts";
 import { optionalString, requiredString, toolArguments } from "./tool-arguments.ts";
 
 export type Due = { date: string; time?: string } | null;
@@ -17,8 +18,8 @@ export type Classification =
   | { kind: "query"; conversation: ChatMessage[]; first: InventoryToolCall }
   /** A Command: a request to change Inventory data, which is not supported yet. */
   | { kind: "command" }
-  /** Research: a question to look up, on the web when `web`, and in the User's own Notes and Tasks. */
-  | { kind: "research"; question: string; web: boolean }
+  /** Research: something to find out, on the web when the request says so, and in the User's own Notes and Tasks. */
+  | { kind: "research"; request: ResearchRequest }
   /** A greeting such as "hi", answered by saying what the bot can do. */
   | { kind: "greeting" }
   /** The model can't tell whether the message is a Note, Task or Query, so a Clarification is asked. */
@@ -202,7 +203,7 @@ const SYSTEM_PROMPT =
  * Throws AllModelsFailedError, carrying every attempt, when no model gives a usable answer.
  */
 export async function classify(
-  llm: Llm,
+  llm: ToolCalling,
   transcript: string,
   context: {
     today: { date: string; weekday: string };
@@ -273,7 +274,7 @@ function readClassification(call: MadeToolCall, conversation: ChatMessage[], off
     case RESEARCH.function.name: {
       const web = args.web;
       if (typeof web !== "boolean") throw new Error('Model gave a non-boolean "web"');
-      return { kind: "research", question: requiredString(args, "question"), web };
+      return { kind: "research", request: { question: requiredString(args, "question"), web } };
     }
     case GREET.function.name:
       return { kind: "greeting" };

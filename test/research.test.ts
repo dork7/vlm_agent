@@ -99,36 +99,85 @@ describe("core: Research", () => {
     });
   }
 
+  /** The number the research prompt gave one of the User's saved items, which the model cites as "[n]". */
+  const numberOf = (body: { messages: Array<{ content: string }> }, heading: string): string => {
+    const prompt = body.messages.map((message) => message.content).join("\n");
+    const found = prompt.match(new RegExp(`\\[(\\d+)\\] (?:Note|Task) "${heading}"`));
+    if (!found) throw new Error(`The research prompt did not number "${heading}"`);
+    return found[1]!;
+  };
+
+  const researchRequest = () => openRouter.requests.at(-1)!.body;
+  const researchStage = async (runId: string | null) => {
+    const run = (await database().runs.findOne({ _id: new ObjectId(runId!) }))!;
+    return { run, stage: run.stages.find((candidate) => candidate.name === "research")! };
+  };
+
   it("answers a question about the User's own items from their matching Notes and Tasks, without the web", async () => {
     await saveItems();
     openRouter.script(MODEL, toolCall("research", { question: "What did I note about the supplier?", web: false }));
-    openRouter.script(MODEL, textAnswer("Your supplier contact is Ahmed at Gulf Packaging, ext 214."));
+    openRouter.script(MODEL, (body) =>
+      textAnswer(`Your supplier contact is Ahmed at Gulf Packaging, ext 214 [${numberOf(body, "Supplier contact")}].`),
+    );
 
     const { events } = await send("what did I note about the supplier?");
 
-    const result = events.at(-1);
-    expect(result).toEqual({
+    // Only the item the answer cited is a source, and its marker is gone from the answer.
+    expect(events.at(-1)).toEqual({
       type: "result",
       result: {
         kind: "researched",
         answer: "Your supplier contact is Ahmed at Gulf Packaging, ext 214.",
-        sources: {
-          web: [],
-          items: expect.arrayContaining([
-            { kind: "note", heading: "Supplier contact" },
-            { kind: "task", heading: "Call the supplier" },
-          ]),
-        },
+        sources: { web: [], items: [{ kind: "note", heading: "Supplier contact" }] },
       },
     });
-    expect((result as any).result.sources.items).toHaveLength(2);
-    const research = openRouter.requests.at(-1)!;
-    expect(research.body.plugins).toBeUndefined();
-    const sent = JSON.stringify(research.body.messages);
+    expect(researchRequest().plugins).toBeUndefined();
+    const sent = JSON.stringify(researchRequest().messages);
     expect(sent).toContain("Ahmed at Gulf Packaging, ext 214.");
     expect(sent).toContain("Call the supplier about the late pallets.");
     expect(sent).not.toContain("falafel");
     expect(sent).not.toContain("Secret supplier price list");
+  });
+
+  it("says plainly that nothing was found when no saved item matches a question about the User's own items", async () => {
+    await saveItems();
+    openRouter.script(MODEL, toolCall("research", { question: "What did I note about the forklift?", web: false }));
+
+    const { events, handled } = await send("what did I note about the forklift?");
+
+    expect(events.at(-1)).toEqual({ type: "result", result: { kind: "nothing-found" } });
+    expect(openRouter.requests).toHaveLength(1);
+    const { run, stage } = await researchStage(handled.runId);
+    expect(run.type).toBe("research");
+    expect(stage.details).toEqual({ web: false, matches: [], sources: { web: [], items: [] }, attempts: [] });
+  });
+
+  it("falls back to the local model for a question about the User's own items", async () => {
+    await saveItems();
+    openRouter.script(MODEL, toolCall("research", { question: "What did I note about the supplier?", web: false }));
+    openRouter.script(MODEL, { status: 503, body: { error: { message: "overloaded" } } });
+    openRouter.script(BACKUP, { status: 503, body: { error: { message: "overloaded" } } });
+    openRouter.script(LOCAL_MODEL, textAnswer("Ahmed at Gulf Packaging, ext 214."));
+
+    const { events, handled } = await send("what did I note about the supplier?", true);
+
+    expect(events.at(-1)).toMatchObject({ type: "result", result: { kind: "researched", answer: "Ahmed at Gulf Packaging, ext 214." } });
+    const { stage } = await researchStage(handled.runId);
+    expect((stage.details.attempts as Array<{ model: string }>).map(({ model }) => model)).toEqual([
+      MODEL,
+      BACKUP,
+      `local/${LOCAL_MODEL}`,
+    ]);
+  });
+
+  it("lists at most five web pages as sources", async () => {
+    const pages = Array.from({ length: 7 }, (_, index) => ({ url: `https://news.example/${index}`, title: `Page ${index}` }));
+    openRouter.script(MODEL, toolCall("research", { question: "Latest UAE shipping news", web: true }));
+    openRouter.script(MODEL, textAnswer("Ports are busy this week.", pages));
+
+    const { events } = await send("find the latest shipping news");
+
+    expect(events.at(-1)).toMatchObject({ result: { kind: "researched", sources: { web: pages.slice(0, 5), items: [] } } });
   });
 
   it("gives the failure reply when no OpenRouter model answers a web question, never trying the local model", async () => {
@@ -141,10 +190,9 @@ describe("core: Research", () => {
 
     expect(events.at(-1)).toEqual({ type: "result", result: { kind: "error" } });
     expect(openRouter.requests.map((request) => request.model)).not.toContain(LOCAL_MODEL);
-    const run = (await database().runs.findOne({ _id: new ObjectId(handled.runId!) }))!;
+    const { run, stage } = await researchStage(handled.runId);
     expect(run.status).toBe("failed");
     expect(run.error?.stage).toBe("research");
-    const stage = run.stages.find((candidate) => candidate.name === "research")!;
     expect(stage.outcome).toBe("failed");
     expect((stage.details.attempts as Array<{ model: string; outcome: string }>).map(({ model, outcome }) => ({ model, outcome }))).toEqual([
       { model: MODEL, outcome: "failed" },
@@ -152,22 +200,27 @@ describe("core: Research", () => {
     ]);
   });
 
-  it("records the Run as research, with what the research stage searched and found", async () => {
+  it("records the Run as research, with the matches, the web search and the sources", async () => {
     await saveItems();
     openRouter.script(MODEL, toolCall("research", { question: "Who is our packaging supplier and what do they charge?", web: true }));
-    openRouter.script(MODEL, textAnswer("Ahmed at Gulf Packaging; their list price is on their site.", [VAT_PAGE]));
+    openRouter.script(MODEL, (body) =>
+      textAnswer(`Ahmed at Gulf Packaging [${numberOf(body, "Supplier contact")}]; their prices are online.`, [VAT_PAGE]),
+    );
 
     const { handled } = await send("find out who our packaging supplier is and what they charge");
 
-    const run = (await database().runs.findOne({ _id: new ObjectId(handled.runId!) }))!;
+    expect(JSON.stringify(researchRequest().messages)).not.toContain("Secret supplier price list");
+    const { run, stage } = await researchStage(handled.runId);
     expect(run.status).toBe("succeeded");
     expect(run.type).toBe("research");
-    const stage = run.stages.find((candidate) => candidate.name === "research")!;
     expect(stage.outcome).toBe("succeeded");
     expect(stage.details).toEqual({
       web: true,
-      matches: 2,
-      webSources: 1,
+      matches: [
+        { kind: "note", heading: "Supplier contact" },
+        { kind: "task", heading: "Call the supplier" },
+      ],
+      sources: { web: [VAT_PAGE], items: [{ kind: "note", heading: "Supplier contact" }] },
       attempts: [{ model: MODEL, outcome: "succeeded", tokens: { prompt: 500, completion: 60, total: 560 }, cost: 0.0123 }],
     });
   });

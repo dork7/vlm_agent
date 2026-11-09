@@ -33,12 +33,16 @@ type Usage = { tokens?: TokenUsage; cost?: number };
 /** OpenRouter's `usage` field, as it arrives: any of it may be missing or not a number. */
 type ReportedUsage = { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown; cost?: unknown };
 
-export type Llm = {
+/** Asking a model to answer by calling one of the given tools. */
+export type ToolCalling = {
   /**
    * Asks each model in turn to answer by calling exactly one of the given tools, until one gives an
    * answer `read` accepts. `read` throws on an unusable answer, which moves on to the next model.
    */
   callTool<T>(request: { messages: ChatMessage[]; tools: Tool[]; read: (call: MadeToolCall) => T }): Promise<LlmAnswer<T>>;
+};
+
+export type Llm = ToolCalling & {
   /**
    * Asks each model in turn for a written answer. With `web`, OpenRouter's web search plugin adds search results
    * to the request and the answer comes back with the pages it cited; only OpenRouter models are tried, since the

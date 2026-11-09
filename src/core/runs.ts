@@ -1,7 +1,7 @@
 import type { ObjectId } from "mongodb";
 import type { Database, RunDoc, RunStageName, RunType } from "../db.ts";
 import type { InventoryClient } from "../inventory/client.ts";
-import { AllModelsFailedError, type Llm, type LlmAnswer } from "../llm/openrouter.ts";
+import { AllModelsFailedError, type ModelAttempt, type ToolCalling } from "../llm/openrouter.ts";
 import type { TimeStage } from "../transcriber/transcriber.ts";
 import type { CoreEvent, EmitEvent, HandledMessage, Result } from "./core.ts";
 
@@ -39,6 +39,7 @@ const RESULT_TYPES: Partial<Record<Result["kind"], RunType>> = {
   "task-saved": "task",
   "query-answered": "query",
   researched: "research",
+  "nothing-found": "research",
   "tasks-listed": "task-list",
   "notes-listed": "note-list",
   "command-declined": "command",
@@ -147,35 +148,41 @@ export async function startRun(
   };
 }
 
-/** The Llm, with each call recorded as the given stage, along with every model attempt it made. */
+/**
+ * Runs a model call, adding every model attempt it made to the message's, whether a model answered or every one
+ * failed (the AllModelsFailedError carries them).
+ */
+export async function collectingAttempts<T extends { attempts: ModelAttempt[] }>(
+  handled: Pick<HandledMessage, "modelAttempts">,
+  call: () => Promise<T>,
+): Promise<T> {
+  try {
+    const answer = await call();
+    handled.modelAttempts.push(...answer.attempts);
+    return answer;
+  } catch (error) {
+    if (error instanceof AllModelsFailedError) handled.modelAttempts.push(...error.attempts);
+    throw error;
+  }
+}
+
+/** For a failed model stage's details: the attempts made, when every model failed. */
+export function attemptsOnError(error: unknown): { attempts?: ModelAttempt[] } {
+  return error instanceof AllModelsFailedError ? { attempts: error.attempts } : {};
+}
+
+/** Tool calls to the model, each recorded as the given stage along with every model attempt it made. */
 export function recordingLlm(
   recorder: RunRecorder,
-  llm: Llm,
+  llm: ToolCalling,
   handled: Pick<HandledMessage, "modelAttempts">,
-): (stage: RunStageName) => Llm {
-  const recorded =
-    (stage: RunStageName) =>
-    <T>(call: () => Promise<LlmAnswer<T>>): Promise<LlmAnswer<T>> =>
-      recorder.stage(
-        stage,
-        async () => {
-          try {
-            const answer = await call();
-            handled.modelAttempts.push(...answer.attempts);
-            return answer;
-          } catch (error) {
-            if (error instanceof AllModelsFailedError) handled.modelAttempts.push(...error.attempts);
-            throw error;
-          }
-        },
-        {
-          details: (answer) => ({ attempts: answer.attempts }),
-          detailsOnError: (error) => (error instanceof AllModelsFailedError ? { attempts: error.attempts } : {}),
-        },
-      );
+): (stage: RunStageName) => ToolCalling {
   return (stage) => ({
-    callTool: (request) => recorded(stage)(() => llm.callTool(request)),
-    answer: (request) => recorded(stage)(() => llm.answer(request)),
+    callTool: (request) =>
+      recorder.stage(stage, () => collectingAttempts(handled, () => llm.callTool(request)), {
+        details: (answer) => ({ attempts: answer.attempts }),
+        detailsOnError: attemptsOnError,
+      }),
   });
 }
 

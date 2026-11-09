@@ -51,6 +51,9 @@ const PROCESSED_BY: Record<EventSource["processedBy"], string> = {
   openrouter: "Processed by OpenRouter",
   local: "Processed by local AI",
 };
+const NOTHING_FOUND = "I couldn't find anything about that in your Notes or Tasks.";
+/** Room for one page of a reply under Telegram's 4096-character message limit, leaving space for the source line. */
+const PAGE_LIMIT = 4000;
 const GREETING = [
   "Hi! Here's what I can do. Type or send a Voice Message and I'll:",
   "• Save it as a Note, for anything you want to remember",
@@ -215,6 +218,8 @@ function resultText(result: Exclude<Extract<CoreEvent, { type: "result" }>["resu
       return result.answer;
     case "researched":
       return formatResearch(result.answer, result.sources);
+    case "nothing-found":
+      return NOTHING_FOUND;
     case "command-declined":
       return COMMAND_DECLINED;
     case "greeted":
@@ -266,34 +271,41 @@ function formatDue(due: Due): string {
 /** Each Note's heading and text, packed into pages that leave room under Telegram's 4096-character limit for the source line. */
 function formatNoteList(notes: ListedNote[]): string[] {
   if (notes.length === 0) return ["You have no Notes yet."];
-  const pageLimit = 4000;
   const blocks = notes.flatMap((note, index) => {
     const block = `${index + 1}. ${note.heading}\n${note.text}`;
     // A Note longer than a whole page is cut across pages.
     const pieces = [];
-    for (let start = 0; start < block.length; start += pageLimit) pieces.push(block.slice(start, start + pageLimit));
+    for (let start = 0; start < block.length; start += PAGE_LIMIT) pieces.push(block.slice(start, start + PAGE_LIMIT));
     return pieces;
   });
   const pages = ["Your Notes:"];
   for (const block of blocks) {
     const current = pages.at(-1)!;
-    if (current.length + 2 + block.length <= pageLimit) pages[pages.length - 1] = `${current}\n\n${block}`;
+    if (current.length + 2 + block.length <= PAGE_LIMIT) pages[pages.length - 1] = `${current}\n\n${block}`;
     else pages.push(block);
   }
   return pages;
 }
 
-/** The answer, then its sources, cut to leave room under Telegram's 4096-character limit for the source line. */
+/**
+ * The answer, then its sources, as one page. A long answer is cut to leave room for the sources; sources that still
+ * don't fit are left out whole, so no link or Heading is ever cut short.
+ */
 function formatResearch(answer: string, sources: ResearchSources): string {
   const lines = [
     ...sources.web.map((page) => (page.title === page.url ? `• ${page.url}` : `• ${page.title}: ${page.url}`)),
     ...sources.items.map((item) => `• Your ${ITEM_LABELS[item.kind]}: ${item.heading}`),
   ];
-  const listed = lines.length === 0 ? "" : `\n\nSources:\n${lines.join("\n")}`;
-  const limit = 4000;
-  const room = Math.max(limit - listed.length, 500);
-  const text = answer.length > room ? `${answer.slice(0, room - 1)}…` : answer;
-  return `${text}${listed}`.slice(0, limit);
+  /** The answer keeps at least this much room, however many sources there are. */
+  const answerRoom = Math.max(PAGE_LIMIT - "\n\nSources:".length - lines.reduce((sum, line) => sum + 1 + line.length, 0), PAGE_LIMIT / 2);
+  const text = answer.length > answerRoom ? `${answer.slice(0, answerRoom - 1)}…` : answer;
+  let page = text;
+  for (const [index, line] of lines.entries()) {
+    const next = `${page}${index === 0 ? "\n\nSources:" : ""}\n${line}`;
+    if (next.length > PAGE_LIMIT) break;
+    page = next;
+  }
+  return page;
 }
 
 function formatTaskList(tasks: ListedTask[], more: number, date: string | null): string {

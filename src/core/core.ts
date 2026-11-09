@@ -14,7 +14,7 @@ import {
   type UserDoc,
 } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
-import { AllModelsFailedError, isLocalModel, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
+import { isLocalModel, type Llm, type ModelAttempt, type ToolCalling } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
@@ -25,6 +25,8 @@ import { answerQuery } from "./query.ts";
 import { research, type ResearchSources } from "./research.ts";
 import { sendDueReminders, type DeliverReminder, type ReminderEvent } from "./reminders.ts";
 import {
+  attemptsOnError,
+  collectingAttempts,
   errorMessage,
   recordingEmit,
   recordingInventory,
@@ -78,6 +80,8 @@ export type Result =
   | { kind: "query-answered"; answer: string }
   /** A Research answer, and the web pages and the User's own Notes and Tasks it drew on. */
   | { kind: "researched"; answer: string; sources: ResearchSources }
+  /** Research about only the User's own Notes and Tasks, when none of them matched. */
+  | { kind: "nothing-found" }
   /** A Command: changing Inventory data is not supported yet. */
   | { kind: "command-declined" }
   /** A greeting; the Channel says hi and what the bot can do. */
@@ -134,7 +138,7 @@ type Handling = {
   emit: EmitEvent;
   handled: HandledMessage;
   /** The model, its calls recorded as the given stage of the Run. */
-  llm: (stage: RunStageName) => Llm;
+  llm: (stage: RunStageName) => ToolCalling;
   inventory: InventoryClient;
   recorder: RunRecorder;
 };
@@ -407,25 +411,19 @@ export function createCore(deps: {
     }
 
     if (classification.kind === "research") {
-      const { question, web } = classification;
-      let researched;
+      const { request } = classification;
+      let outcome;
       try {
         // Its own stage, so the Run shows what was searched and found as well as the model attempts.
-        researched = await handling.recorder.stage(
+        outcome = await handling.recorder.stage(
           "research",
-          async () => {
-            try {
-              const value = await research({ llm: deps.llm, database, ownerId: user._id!, question, web, today: todayIn(now(), timezone) });
-              handling.handled.modelAttempts.push(...value.attempts);
-              return value;
-            } catch (error) {
-              if (error instanceof AllModelsFailedError) handling.handled.modelAttempts.push(...error.attempts);
-              throw error;
-            }
-          },
+          () =>
+            collectingAttempts(handling.handled, () =>
+              research({ llm: deps.llm, database, ownerId: user._id!, request, today: todayIn(now(), timezone) }),
+            ),
           {
-            details: (value) => ({ web, matches: value.matches, webSources: value.sources.web.length, attempts: value.attempts }),
-            detailsOnError: (error) => ({ web, ...(error instanceof AllModelsFailedError ? { attempts: error.attempts } : {}) }),
+            details: ({ matches, sources, attempts }) => ({ web: request.web, matches, sources, attempts }),
+            detailsOnError: (error) => ({ web: request.web, ...attemptsOnError(error) }),
           },
         );
       } catch (error) {
@@ -433,7 +431,8 @@ export function createCore(deps: {
         await emit({ type: "result", result: { kind: "error" } });
         return false;
       }
-      await emit({ type: "result", result: { kind: "researched", answer: researched.answer, sources: researched.sources } });
+      const { answer, sources } = outcome;
+      await emit({ type: "result", result: answer === null ? { kind: "nothing-found" } : { kind: "researched", answer, sources } });
       return true;
     }
 
