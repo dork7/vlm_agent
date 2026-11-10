@@ -236,7 +236,7 @@ describe("core: saying which side processed a message", () => {
 
     expect(emitted.at(-1)).toEqual({
       event: { type: "result", result: { kind: "note-saved", heading: "Dentist's new number" } },
-      source: { processedBy: "openrouter" },
+      source: { processedBy: "openrouter", model: FIRST },
     });
   });
 
@@ -248,7 +248,7 @@ describe("core: saying which side processed a message", () => {
     const emitted = await send("the supplier thing");
 
     expect(emitted.at(-1)!.event.type).toBe("clarification-needed");
-    expect(emitted.at(-1)!.source).toEqual({ processedBy: "local" });
+    expect(emitted.at(-1)!.source).toEqual({ processedBy: "local", model: "local-chat" });
   });
 
   it("names no source when no model answered", async () => {

@@ -146,7 +146,7 @@ export type RunDoc = {
   chatId: string;
   messageId: string;
   /** What arrived; a reply that answers a Clarification, or confirms or cancels a change, is counted as that. */
-  content: "text" | "voice" | "clarification-answer" | "change-answer";
+  content: "text" | "voice" | "clarification-answer" | "change-answer" | "list";
   /** The User who sent it; null when the sender was refused. */
   userId: ObjectId | null;
   username: string | null;

@@ -331,7 +331,7 @@ describe("Telegram adapter: a proposed change", () => {
     const core: Core = {
       async handleMessage(message, emit) {
         received.push(message);
-        for (const event of script) await emit(event, { processedBy: "openrouter" });
+        for (const event of script) await emit(event, { processedBy: "openrouter", model: "test/model-a" });
         finishHandling();
         return { duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null, runId: null } satisfies HandledMessage;
       },
@@ -417,7 +417,7 @@ describe("Telegram adapter: a proposed change", () => {
           "Change this Task?\n\n" +
           "Now:\nCall the supplier (due Sun 1 Nov 2026)\nAbout the invoice.\n\n" +
           "After:\nCall the supplier (due Mon 2 Nov 2026, 15:00)\nAbout the invoice." +
-          "\n\nProcessed by OpenRouter",
+          "\n\nProcessed by OpenRouter (test/model-a)",
         reply_markup: {
           inline_keyboard: [
             [
@@ -453,7 +453,7 @@ describe("Telegram adapter: a proposed change", () => {
     });
     await handlingDone;
 
-    expect(apiCalls.at(-1)!.payload.text).toBe("Delete this Note?\n\nForklift key\nIn the top drawer.\n\nProcessed by OpenRouter");
+    expect(apiCalls.at(-1)!.payload.text).toBe("Delete this Note?\n\nForklift key\nIn the top drawer.\n\nProcessed by OpenRouter (test/model-a)");
     expect(apiCalls.at(-1)!.payload.reply_markup.inline_keyboard[0][0]).toEqual({ text: "Delete", callback_data: `change:${CHANGE_ID}:yes` });
   });
 
@@ -478,7 +478,7 @@ describe("Telegram adapter: a proposed change", () => {
     expect(received[0]!.content).toEqual({ kind: "change-answer", changeId: CHANGE_ID, confirm: true });
     expect(apiCalls.at(-1)).toMatchObject({
       method: "editMessageText",
-      payload: { message_id: 900, text: "Deleted Note: Forklift key\n\nProcessed by OpenRouter" },
+      payload: { message_id: 900, text: "Deleted Note: Forklift key\n\nProcessed by OpenRouter (test/model-a)" },
     });
   });
 });

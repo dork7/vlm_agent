@@ -50,7 +50,9 @@ export type InboundMessage = {
     /** The User's choice in an earlier Clarification, e.g. a tapped button. */
     | { kind: "clarification-answer"; clarificationId: string; answer: ClarificationOption }
     /** The User's answer to a proposed change, e.g. a tapped Confirm or Cancel button. */
-    | { kind: "change-answer"; changeId: string; confirm: boolean };
+    | { kind: "change-answer"; changeId: string; confirm: boolean }
+    /** A request to see the User's open Tasks or their Notes, e.g. a tapped button; no model is asked. */
+    | { kind: "list"; what: "tasks" | "notes" };
   clarifyWith: ClarifyWith;
 };
 
@@ -111,7 +113,8 @@ export type CoreEvent =
   | { type: "change-proposed"; changeId: string; action: ChangeAction; before: ShownItem; after: ShownItem | null };
 
 /** Which model answered for a result or Clarification: one on OpenRouter, or one on the local model server. */
-export type EventSource = { processedBy: "openrouter" | "local" };
+/** Which side's model answered, and its name (a local model's without the "local/" prefix). */
+export type EventSource = { processedBy: "openrouter" | "local"; model: string };
 
 /** `source` is absent when no model answered, e.g. for a refusal or when every model failed. */
 export type EmitEvent = (event: CoreEvent, source?: EventSource) => Promise<void>;
@@ -174,6 +177,21 @@ export function createCore(deps: {
     }
   };
 
+  /** Shows the User their open Tasks (due on `date`, when given) or their Notes, newest first. */
+  const listItems = async (user: UserDoc, request: { what: "tasks" | "notes"; date: string | null }, emit: EmitEvent) => {
+    if (request.what === "tasks") {
+      const { date } = request;
+      const { tasks, more } = await listTasks(database, user._id!, user.timezone ?? defaultTimezone, date);
+      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
+      return;
+    }
+    const notes = await database.notes.find({ ownerId: user._id! }).sort({ createdAt: -1, _id: -1 }).toArray();
+    await emit({
+      type: "result",
+      result: { kind: "notes-listed", notes: notes.map((note) => ({ heading: note.heading, text: note.text })) },
+    });
+  };
+
   /** Records the message as being handled; false when the Channel already delivered it, even if that was before a restart. */
   const claimMessage = async (message: InboundMessage): Promise<boolean> => {
     try {
@@ -208,6 +226,10 @@ export function createCore(deps: {
     }
     if (content.kind === "change-answer") {
       await answerChange(user, content.changeId, content.confirm, handling);
+      return;
+    }
+    if (content.kind === "list") {
+      await listItems(user, { what: content.what, date: null }, emit);
       return;
     }
     if (message.clarifyWith === "text") {
@@ -462,10 +484,9 @@ export function createCore(deps: {
       return true;
     }
 
-    if (classification.kind === "list-tasks") {
-      const { date } = classification;
-      const { tasks, more } = await listTasks(database, user._id!, timezone, date);
-      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
+    if (classification.kind === "list-tasks" || classification.kind === "list-notes") {
+      const { date } = classification.kind === "list-tasks" ? classification : { date: null };
+      await listItems(user, { what: classification.kind === "list-tasks" ? "tasks" : "notes", date }, emit);
       return true;
     }
 
@@ -504,15 +525,6 @@ export function createCore(deps: {
       };
       const { insertedId } = await database.changes.insertOne(change);
       await showChange(insertedId, change, handling);
-      return true;
-    }
-
-    if (classification.kind === "list-notes") {
-      const notes = await database.notes.find({ ownerId: user._id! }).sort({ createdAt: -1, _id: -1 }).toArray();
-      await emit({
-        type: "result",
-        result: { kind: "notes-listed", notes: notes.map((note) => ({ heading: note.heading, text: note.text })) },
-      });
       return true;
     }
 
@@ -604,7 +616,10 @@ export function createCore(deps: {
 function sourceOf(attempts: ModelAttempt[]): EventSource | undefined {
   const answered = attempts.findLast((attempt) => attempt.outcome === "succeeded");
   if (!answered) return undefined;
-  return { processedBy: isLocalModel(answered.model) ? "local" : "openrouter" };
+  const { model } = answered;
+  return isLocalModel(model)
+    ? { processedBy: "local", model: model.replace(/^local\/?/, "") }
+    : { processedBy: "openrouter", model };
 }
 
 function storedDue(due: Due, timezone: string): TaskDue {
