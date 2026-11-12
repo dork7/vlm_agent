@@ -11,6 +11,8 @@ import { createWhisperTranscriber } from "./transcriber/transcriber.ts";
 import { startReminderScheduler } from "./reminder-scheduler.ts";
 import { createTelegramBot, sendTelegramReminder, telegramWebhookHandler } from "./telegram/adapter.ts";
 import { ensureFirstAdmin } from "./users.ts";
+import { loadAssignConfig } from "./assign/config.ts";
+import { consoleMailer, resendMailer } from "./assign/mailer.ts";
 
 async function main() {
   let config;
@@ -30,6 +32,7 @@ async function main() {
   }
 
   const database = await connectDatabase(config.mongo.uri, config.mongo.dbName);
+  const assignConfig = loadAssignConfig(process.env);
   await ensureFirstAdmin(database, { ...config.firstAdmin, timezone: config.defaultTimezone });
   // Before the first Reminder check, so Tasks saved before Reminders existed don't all get one at once.
   const backfill = await backfillReminderMarkers(database, config.defaultTimezone, new Date());
@@ -60,6 +63,7 @@ async function main() {
   const server = buildServer({
     inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey },
     dashboard: { database, defaultTimezone: config.defaultTimezone, markdownDir: config.markdownDir },
+    ...(assignConfig ? { assign: { db: database.db, config: assignConfig, mailer: assignConfig.resend ? resendMailer(assignConfig.resend.apiKey, assignConfig.resend.from) : consoleMailer() } } : {}),
     ...(mode.kind === "webhook"
       ? { webhook: { path: mode.path, handler: telegramWebhookHandler(bot, mode.secretToken) } }
       : {}),

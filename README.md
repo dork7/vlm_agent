@@ -4,7 +4,7 @@ Voice Notes Bot: turns Voice Messages and typed messages sent to a bot into Note
 
 ## Running it
 
-Requires Node.js 22+, and for Voice Messages ffmpeg, whisper.cpp and an English whisper model:
+Requires Node.js 24.7+, and for Voice Messages ffmpeg, whisper.cpp and an English whisper model:
 
 ```sh
 brew install ffmpeg whisper-cpp
