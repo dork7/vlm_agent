@@ -144,6 +144,20 @@
   .task-lines { margin: .5rem 0 0; padding-left: 1.2rem; }
   .row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem .75rem; }
   .row form { margin: 0; }
+  .task-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; margin: 1.25rem 0 1rem; }
+  .task-toolbar h2 { margin: 0; }
+  .view-toggle { display: inline-flex; gap: .25rem; }
+  .view-toggle[hidden] { display: none; }
+  .view-toggle button { margin: 0; background: transparent; }
+  .view-toggle button[aria-pressed="true"] { background: var(--accent-surface); border-color: var(--accent); }
+  .task-collection { display: grid; gap: .75rem; }
+  .task-collection article { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .task-collection[data-view="list"] article { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .35rem 1rem; }
+  .task-collection[data-view="grid"] { grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); }
+  .task-heading { min-width: 0; }
+  .task-meta { display: flex; flex-wrap: wrap; gap: .25rem 1rem; font-size: .875rem; }
+  .task-meta:empty { display: none; }
+  .task-collection[data-view="grid"] .task-meta { margin-top: .65rem; }
   button.danger { background: var(--danger-surface); border-color: var(--danger); color: var(--danger); }
   button.danger:hover { background: var(--danger-surface); border-color: var(--danger); filter: brightness(1.12); }
   button.secondary { background: transparent; }

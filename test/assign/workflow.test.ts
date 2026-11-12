@@ -55,6 +55,23 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/revoke`);
     expect((await app.inject({ method: "GET", url: link })).body).toContain("no longer available");
   });
+  it("offers both Task layouts while preserving tag filtering and Task links", async () => {
+    const owner = browser(); await owner.login("layouts@example.com");
+    await owner.post("/assign/tasks", { title: "Pack books", tags: "move" });
+    await owner.post("/assign/tasks", { title: "Paint wall", tags: "repair" });
+    const store = await openAssignStore(db);
+    const task = (await store.tasks.findOne({ title: "Pack books" }))!;
+    const html = (await owner.get("/assign/tasks?tag=move")).body;
+    expect(html).toContain('aria-label="Task view"');
+    expect(html).toContain('data-task-view="list"');
+    expect(html).toContain('data-task-view="grid"');
+    expect(html).toContain(`href="/assign/tasks/${task._id}"`);
+    expect(html).toContain('name="tag" value="move"');
+    expect(html).not.toContain("Paint wall");
+    const empty = (await owner.get("/assign/tasks?tag=missing")).body;
+    expect(empty).toContain("No Tasks tagged");
+    expect(empty).not.toContain('aria-label="Task view"');
+  });
   it("rejects CSRF failures and another Owner's Task ID", async () => {
     const one = browser(); await one.login("one@example.com");
     await one.post("/assign/tasks", { title: "Private" });
