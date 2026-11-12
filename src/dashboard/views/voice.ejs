@@ -1,0 +1,171 @@
+<%- include("header", { title: "Voice" }) %>
+<h1>Voice</h1>
+<p>Call the voice assistant and ask it anything, out loud or by typing. Its answer appears here as it speaks. It runs on this machine's own AI models, and nothing said here is saved as Notes or Tasks.</p>
+
+<div class="voice-controls">
+  <button type="button" id="voice-start">Start talking</button>
+  <button type="button" id="voice-mute" hidden aria-pressed="false">Mute microphone</button>
+  <button type="button" id="voice-end" hidden>End</button>
+</div>
+<p id="voice-status" class="meta" role="status" aria-live="polite">Not connected.</p>
+
+<ol id="voice-transcript" class="voice-transcript" aria-label="Conversation"></ol>
+<form id="voice-ask" class="voice-ask" hidden>
+  <label for="voice-question" class="visually-hidden">Type a question</label>
+  <input type="text" id="voice-question" placeholder="Or type a question…" autocomplete="off" required>
+  <button type="submit">Ask</button>
+</form>
+<div id="voice-audio" hidden></div>
+
+<script src="/voice/livekit-client.js"></script>
+<script>
+(() => {
+  const { Room, RoomEvent, Track, ParticipantKind } = LivekitClient;
+  const startButton = document.getElementById("voice-start");
+  const muteButton = document.getElementById("voice-mute");
+  const endButton = document.getElementById("voice-end");
+  const statusLine = document.getElementById("voice-status");
+  const transcript = document.getElementById("voice-transcript");
+  const audio = document.getElementById("voice-audio");
+  const askForm = document.getElementById("voice-ask");
+  const question = document.getElementById("voice-question");
+
+  /** What the assistant is doing, from its `lk.agent.state` attribute. */
+  const AGENT_STATES = {
+    initializing: "The assistant is getting ready…",
+    idle: "The assistant is ready.",
+    listening: "Listening. Go ahead and speak.",
+    thinking: "Thinking…",
+    speaking: "Speaking…",
+  };
+
+  let room = null;
+  let micMuted = false;
+
+  const setStatus = (text) => { statusLine.textContent = text; };
+  const showConnected = (connected) => {
+    startButton.hidden = connected;
+    startButton.disabled = false;
+    muteButton.hidden = !connected;
+    endButton.hidden = !connected;
+    askForm.hidden = !connected;
+  };
+
+  /** One line of the conversation per transcription segment, filled in as its text streams in. */
+  const lines = new Map();
+  const lineFor = (segmentId, speaker) => {
+    let line = lines.get(segmentId);
+    if (!line) {
+      line = document.createElement("li");
+      line.className = `voice-line voice-${speaker}`;
+      const who = document.createElement("span");
+      who.className = "voice-who";
+      who.textContent = speaker === "you" ? "You" : "Assistant";
+      const text = document.createElement("span");
+      text.className = "voice-text";
+      line.append(who, text);
+      transcript.append(line);
+      lines.set(segmentId, line);
+    }
+    return line.querySelector(".voice-text");
+  };
+
+  const showAgentState = (participant) => {
+    const state = participant.attributes["lk.agent.state"];
+    if (state && AGENT_STATES[state]) setStatus(micMuted && state === "listening" ? "Your microphone is muted." : AGENT_STATES[state]);
+  };
+
+  async function start() {
+    startButton.disabled = true;
+    setStatus("Connecting…");
+    try {
+      const response = await fetch("/voice/token", { method: "POST", credentials: "same-origin" });
+      if (!response.ok) throw new Error(`The server refused a voice session (${response.status}).`);
+      const { url, token } = await response.json();
+
+      room = new Room({ adaptiveStream: true, dynacast: true });
+      room
+        .on(RoomEvent.TrackSubscribed, (track) => {
+          if (track.kind === Track.Kind.Audio) audio.append(track.attach());
+        })
+        .on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((element) => element.remove()))
+        .on(RoomEvent.ParticipantConnected, (participant) => {
+          if (participant.kind === ParticipantKind.AGENT) setStatus(AGENT_STATES.initializing);
+        })
+        .on(RoomEvent.ParticipantAttributesChanged, (_changed, participant) => {
+          if (participant.kind === ParticipantKind.AGENT) showAgentState(participant);
+        })
+        .on(RoomEvent.ParticipantDisconnected, (participant) => {
+          if (participant.kind === ParticipantKind.AGENT) setStatus("The assistant left the conversation.");
+        })
+        .on(RoomEvent.Disconnected, () => {
+          room = null;
+          audio.replaceChildren();
+          showConnected(false);
+          if (!statusLine.textContent.startsWith("The assistant left")) setStatus("Not connected.");
+        });
+
+      room.registerTextStreamHandler("lk.transcription", async (reader, from) => {
+        const segmentId = reader.info.attributes?.["lk.segment_id"] ?? reader.info.id;
+        const speaker = from.identity === room?.localParticipant.identity ? "you" : "assistant";
+        const text = lineFor(segmentId, speaker);
+        // Each stream about the User's segment is a newer transcript of it (interim, then final) that
+        // replaces the last; the assistant's reply comes as one stream. Chunks are pieces to add on.
+        if (speaker === "you") text.textContent = "";
+        for await (const chunk of reader) {
+          text.textContent += chunk;
+          transcript.lastElementChild?.scrollIntoView({ block: "nearest" });
+        }
+      });
+
+      await room.connect(url, token);
+      await room.startAudio();
+      await room.localParticipant.setMicrophoneEnabled(true);
+      micMuted = false;
+      muteButton.textContent = "Mute microphone";
+      muteButton.setAttribute("aria-pressed", "false");
+      showConnected(true);
+
+      const agent = [...room.remoteParticipants.values()].find((p) => p.kind === ParticipantKind.AGENT);
+      if (agent) showAgentState(agent);
+      else setStatus("Waiting for the assistant to join… (is the voice agent running?)");
+    } catch (error) {
+      await room?.disconnect();
+      room = null;
+      showConnected(false);
+      setStatus(error instanceof Error && error.name === "NotAllowedError"
+        ? "The browser blocked the microphone. Allow it for this site and try again."
+        : `Could not start: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  // A typed question goes to the assistant on LiveKit's chat topic; it stops talking and answers it.
+  let typed = 0;
+  askForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = question.value.trim();
+    if (!room || !text) return;
+    question.value = "";
+    lineFor(`typed-${++typed}`, "you").textContent = text;
+    transcript.lastElementChild?.scrollIntoView({ block: "nearest" });
+    try {
+      await room.localParticipant.sendText(text, { topic: "lk.chat" });
+    } catch (error) {
+      setStatus(`Could not send your question: ${error instanceof Error ? error.message : error}`);
+    }
+  });
+
+  startButton.addEventListener("click", start);
+  endButton.addEventListener("click", () => room?.disconnect());
+  muteButton.addEventListener("click", async () => {
+    if (!room) return;
+    micMuted = !micMuted;
+    await room.localParticipant.setMicrophoneEnabled(!micMuted);
+    muteButton.textContent = micMuted ? "Unmute microphone" : "Mute microphone";
+    muteButton.setAttribute("aria-pressed", String(micMuted));
+    setStatus(micMuted ? "Your microphone is muted." : AGENT_STATES.listening);
+  });
+  window.addEventListener("pagehide", () => room?.disconnect());
+})();
+</script>
+<%- include("footer") %>

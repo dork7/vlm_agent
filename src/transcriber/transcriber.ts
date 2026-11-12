@@ -60,12 +60,7 @@ export function createWhisperTranscriber(config: {
           ),
         );
         return await timeStage("transcription", async () => {
-          await run(
-            config.whisperPath,
-            ["-m", config.modelPath, "-f", wav, "-l", "en", "-nt", "-np", "-otxt", "-of", output],
-            { timeout: TRANSCRIBE_TIMEOUT_MS },
-          );
-          const transcript = cleanTranscript(await readFile(`${output}.txt`, "utf8"));
+          const transcript = await transcribeWav(config, wav, output);
           if (transcript === "") throw new Error("Transcription heard no speech");
           return transcript;
         });
@@ -74,6 +69,22 @@ export function createWhisperTranscriber(config: {
       }
     },
   };
+}
+
+/**
+ * Transcribes a 16 kHz mono WAV file with the whisper.cpp command-line program, which writes its text
+ * next to `outputBase`. Returns "" when it heard no speech.
+ */
+export async function transcribeWav(
+  config: { whisperPath: string; modelPath: string },
+  wav: string,
+  outputBase: string,
+  timeoutMs = TRANSCRIBE_TIMEOUT_MS,
+): Promise<string> {
+  await run(config.whisperPath, ["-m", config.modelPath, "-f", wav, "-l", "en", "-nt", "-np", "-otxt", "-of", outputBase], {
+    timeout: timeoutMs,
+  });
+  return cleanTranscript(await readFile(`${outputBase}.txt`, "utf8"));
 }
 
 /** Joins whisper's lines and drops its markers for silence or noise, such as [BLANK_AUDIO]. */

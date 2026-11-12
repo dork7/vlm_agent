@@ -9,14 +9,22 @@
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "start": "tsx --env-file-if-exists=.env src/main.ts",
+    "voice-agent": "tsx --env-file-if-exists=.env src/voice/agent.ts start",
+    "voice-agent:dev": "tsx --env-file-if-exists=.env src/voice/agent.ts dev",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:slow": "SLOW_TESTS=1 vitest run test/transcriber.slow.test.ts"
+    "test:slow": "SLOW_TESTS=1 vitest run slow.test"
   },
   "dependencies": {
+    "@livekit/agents": "^1.9.5",
+    "@livekit/agents-plugin-openai": "^1.9.5",
+    "@livekit/agents-plugin-silero": "^1.9.5",
+    "@livekit/rtc-node": "^1.2.2",
     "ejs": "^3.1.10",
     "fastify": "^5.12.7",
     "grammy": "^1.46.0",
+    "livekit-client": "^2.24.0",
+    "livekit-server-sdk": "^2.19.3",
     "mongodb": "^7.7.0"
   },
   "devDependencies": {

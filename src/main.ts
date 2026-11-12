@@ -11,11 +11,13 @@ import { createWhisperTranscriber } from "./transcriber/transcriber.ts";
 import { startReminderScheduler } from "./reminder-scheduler.ts";
 import { createTelegramBot, sendTelegramReminder, telegramWebhookHandler } from "./telegram/adapter.ts";
 import { ensureFirstAdmin } from "./users.ts";
+import { loadLiveKitConfig } from "./voice/config.ts";
 
 async function main() {
-  let config;
+  let config, livekit;
   try {
     config = loadConfig(process.env);
+    livekit = loadLiveKitConfig(process.env);
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     console.error(error.message);
@@ -59,7 +61,12 @@ async function main() {
   const { mode } = config.telegram;
   const server = buildServer({
     inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey },
-    dashboard: { database, defaultTimezone: config.defaultTimezone, markdownDir: config.markdownDir },
+    dashboard: {
+      database,
+      defaultTimezone: config.defaultTimezone,
+      markdownDir: config.markdownDir,
+      ...(livekit ? { voice: livekit } : {}),
+    },
     ...(mode.kind === "webhook"
       ? { webhook: { path: mode.path, handler: telegramWebhookHandler(bot, mode.secretToken) } }
       : {}),

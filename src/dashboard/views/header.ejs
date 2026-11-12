@@ -22,7 +22,18 @@
     .status-failed { color: #b00020; }
     .status-awaiting-clarification { background: #fff3c4; color: #6b4e00; padding: 0 .25rem; }
     .status-refused, .status-in-progress { color: #666; }
+    .voice-controls { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .voice-controls button { font: inherit; padding: .375rem .875rem; }
+    ol.voice-transcript { list-style: none; padding: 0; }
+    .voice-line { padding: .375rem 0; border-bottom: 1px solid #eee; }
+    .voice-who { font-weight: 600; margin-right: .5rem; }
+    .voice-assistant .voice-who { color: #1a5fb4; }
+    form.voice-ask { display: flex; gap: .5rem; margin-top: .75rem; }
+    form.voice-ask input { flex: 1; font: inherit; padding: .375rem; }
+    form.voice-ask button { font: inherit; padding: .375rem .875rem; }
+    form.voice-ask[hidden] { display: none; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   </style>
 </head>
 <body>
-<nav><a href="/tasks">Tasks</a><a href="/notes">Notes</a><% if (locals.viewer?.isAdmin) { %><a href="/runs">Runs</a><a href="/users">Users</a><% } %></nav>
+<nav><a href="/tasks">Tasks</a><a href="/notes">Notes</a><% if (locals.voicePage) { %><a href="/voice">Voice</a><% } %><% if (locals.viewer?.isAdmin) { %><a href="/runs">Runs</a><a href="/users">Users</a><% } %></nav>

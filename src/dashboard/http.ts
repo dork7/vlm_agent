@@ -46,10 +46,14 @@ export function badRequest(reply: FastifyReply, message: string) {
 }
 
 /**
- * Renders a view as the page; every view also gets the logged-in `viewer`. Not in EJS's async mode,
+ * Renders a view as the page; every view also gets the logged-in `viewer`, and `voicePage` for the nav. Not in EJS's async mode,
  * in which the views' un-awaited `include` calls would print "[object Promise]".
  */
 export async function render(reply: FastifyReply, view: string, data: Record<string, unknown>) {
-  const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, { viewer: reply.request.user, ...data });
+  const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, {
+    viewer: reply.request.user,
+    voicePage: reply.server.voicePage === true,
+    ...data,
+  });
   return reply.type("text/html; charset=utf-8").send(html);
 }
