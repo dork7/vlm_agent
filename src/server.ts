@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type RouteHandlerMethod } from "fastify";
 import { dashboardRoutes, type DashboardOptions } from "./dashboard/dashboard.ts";
 import { inventoryRoutes, type InventoryApiOptions } from "./inventory/api.ts";
+import { realtimePlugin, type RealtimeOptions } from "./realtime/websocket.ts";
 
 export function buildServer(options: {
   logger?: boolean;
@@ -9,11 +10,14 @@ export function buildServer(options: {
   webhook?: { path: string; handler: RouteHandlerMethod };
   /** The Users' web dashboard, behind its own login. */
   dashboard?: DashboardOptions;
+  /** The realtime talking agent's local TTS and AI deps. */
+  realtime?: RealtimeOptions;
 }): FastifyInstance {
   const server = Fastify({ logger: options.logger ?? true });
   server.get("/health", async () => ({ status: "ok" }));
   server.register(inventoryRoutes, { prefix: "/inventory", ...options.inventory });
   if (options.webhook) server.post(options.webhook.path, options.webhook.handler);
   if (options.dashboard) server.register(dashboardRoutes, options.dashboard);
+  if (options.realtime) server.register(realtimePlugin, options.realtime);
   return server;
 }

@@ -7,7 +7,6 @@ import { authenticate } from "./auth.ts";
 import { badRequest, field, findOwn, notFound, parseId, render, type Form } from "./http.ts";
 import { runRoutes } from "./runs.ts";
 import { usersPortalRoutes } from "./users-portal.ts";
-
 export type DashboardOptions = {
   database: Database;
   defaultTimezone: string;
@@ -141,6 +140,11 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
       .sort({ createdAt: -1, _id: -1 })
       .toArray();
     return render(reply, "notes", { notes, search, saved: (instant: Date) => shownTime(request.user, instant) });
+  });
+
+  /** The realtime talking agent's web page. */
+  app.get("/realtime", async (_request, reply) => {
+    return render(reply, "realtime", {});
   });
 
   /** One of the User's own Notes; anyone else's, or none, is not found. */

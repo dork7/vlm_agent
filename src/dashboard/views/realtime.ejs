@@ -1,0 +1,159 @@
+<%- include("header", { title: "Talk" }) %>
+<style>
+  .talk { display: flex; flex-direction: column; align-items: center; gap: 1rem; margin-top: 1.5rem; }
+  .talk-status { min-height: 1.5em; color: #666; text-align: center; }
+  .talk-status.ok { color: #1b6e2b; }
+  .talk-status.err { color: #b00020; }
+  .talk-mic {
+    width: 7rem; height: 7rem; border-radius: 50%; border: none;
+    background: #d32f2f; color: #fff; font-size: 2.5rem; cursor: pointer;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    transition: transform .05s, background .2s;
+  }
+  .talk-mic:focus-visible { outline: 3px solid #1a73e8; outline-offset: 4px; }
+  .talk-mic:active, .talk-mic.recording { transform: scale(.94); }
+  .talk-mic.recording { background: #b71c1c; animation: talk-pulse 1.6s infinite; }
+  .talk-mic:disabled { background: #999; cursor: not-allowed; animation: none; }
+  @keyframes talk-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(211, 47, 47, .5); }
+    70% { box-shadow: 0 0 0 1.25rem rgba(211, 47, 47, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(211, 47, 47, 0); }
+  }
+  .talk-bubble { width: 100%; padding: .75rem; border-radius: .5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .talk-bubble.transcript { background: #f6f6f6; border: 1px solid #e3e3e3; }
+  .talk-bubble.response { background: #eaf6ec; border: 1px solid #c6e6cc; }
+  .talk audio { width: 100%; }
+</style>
+
+<h1>Talk</h1>
+<div class="talk">
+  <div class="talk-status" id="talk-status" role="status" aria-live="polite">Connecting…</div>
+  <button type="button" class="talk-mic" id="talk-mic" aria-label="Hold to speak" disabled>🎤</button>
+  <p class="meta">Hold the button (or Space) while you speak, and let go when you're done.</p>
+  <div class="talk-bubble transcript" id="talk-transcript" hidden></div>
+  <div class="talk-bubble response" id="talk-response" hidden></div>
+  <audio id="talk-audio" controls hidden></audio>
+</div>
+
+<script>
+  (() => {
+    const statusEl = document.getElementById("talk-status");
+    const mic = document.getElementById("talk-mic");
+    const transcriptEl = document.getElementById("talk-transcript");
+    const responseEl = document.getElementById("talk-response");
+    const audioEl = document.getElementById("talk-audio");
+    const READY = "Ready. Hold the button to speak.";
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = "talk-status" + (kind ? " " + kind : "");
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      setStatus("This browser can't record from the microphone.", "err");
+      return;
+    }
+
+    /** The first recording format this browser supports; Safari has no WebM. */
+    const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]
+      .find((type) => MediaRecorder.isTypeSupported(type)) || "";
+
+    const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/realtime/ws";
+    let ws;
+    let audioUrl;
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => { mic.disabled = false; setStatus(READY, "ok"); };
+      ws.onclose = () => {
+        mic.disabled = true;
+        setStatus("Disconnected. Reconnecting…", "err");
+        setTimeout(connect, 1500);
+      };
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          // The agent's spoken reply.
+          if (audioUrl) URL.revokeObjectURL(audioUrl);
+          audioUrl = URL.createObjectURL(new Blob([event.data], { type: "audio/wav" }));
+          audioEl.src = audioUrl;
+          audioEl.hidden = false;
+          audioEl.play().catch(() => {});
+          return;
+        }
+        const message = JSON.parse(event.data);
+        if (message.type === "transcript") {
+          transcriptEl.textContent = "You said: " + message.text;
+          transcriptEl.hidden = false;
+          responseEl.hidden = true;
+          audioEl.hidden = true;
+          setStatus("Thinking…");
+        } else if (message.type === "response") {
+          responseEl.textContent = message.text;
+          responseEl.hidden = false;
+          setStatus(READY, "ok");
+        } else if (message.type === "error") {
+          setStatus(message.text, "err");
+        }
+      };
+    }
+    connect();
+
+    let recorder;
+    let pressed = false;
+
+    async function start() {
+      if (pressed || mic.disabled) return;
+      pressed = true;
+      mic.classList.add("recording");
+      setStatus("Listening…", "ok");
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (error) {
+        pressed = false;
+        mic.classList.remove("recording");
+        setStatus("Microphone access was refused: " + (error && error.message ? error.message : error), "err");
+        return;
+      }
+      // Let go before the microphone opened: nothing to send.
+      if (!pressed) {
+        stream.getTracks().forEach((track) => track.stop());
+        setStatus(READY, "ok");
+        return;
+      }
+      const chunks = [];
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        if (chunks.length === 0) { setStatus(READY, "ok"); return; }
+        if (!ws || ws.readyState !== WebSocket.OPEN) { setStatus("Not connected, so that wasn't sent. Try again.", "err"); return; }
+        ws.send(new Blob(chunks, { type: recorder.mimeType || mimeType }));
+        ws.send("end");
+        setStatus("Sending…");
+      };
+      recorder.start(200);
+    }
+
+    function stop() {
+      if (!pressed) return;
+      pressed = false;
+      mic.classList.remove("recording");
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+    }
+
+    mic.addEventListener("pointerdown", (e) => { e.preventDefault(); mic.setPointerCapture(e.pointerId); start(); });
+    mic.addEventListener("pointerup", stop);
+    mic.addEventListener("pointercancel", stop);
+    mic.addEventListener("contextmenu", (e) => e.preventDefault());
+    mic.addEventListener("keydown", (e) => {
+      if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); start(); }
+    });
+    mic.addEventListener("keyup", (e) => {
+      if (e.key === " " || e.key === "Enter") { e.preventDefault(); stop(); }
+    });
+    mic.addEventListener("blur", stop);
+  })();
+</script>
+<%- include("footer") %>

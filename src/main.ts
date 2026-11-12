@@ -11,6 +11,7 @@ import { createWhisperTranscriber } from "./transcriber/transcriber.ts";
 import { startReminderScheduler } from "./reminder-scheduler.ts";
 import { createTelegramBot, sendTelegramReminder, telegramWebhookHandler } from "./telegram/adapter.ts";
 import { ensureFirstAdmin } from "./users.ts";
+import { createTts } from "./realtime/tts.ts";
 
 async function main() {
   let config;
@@ -40,6 +41,12 @@ async function main() {
     );
   }
 
+  const tts = createTts({
+    command: config.realtime.ttsCommand,
+    args: config.realtime.ttsArgs,
+    ffmpegPath: config.transcriber.ffmpegPath,
+  });
+
   const core = createCore({
     database,
     llm: createOpenRouter(config.openRouter),
@@ -60,6 +67,14 @@ async function main() {
   const server = buildServer({
     inventory: { items: loadSeedItems(), apiKey: config.inventory.apiKey },
     dashboard: { database, defaultTimezone: config.defaultTimezone, markdownDir: config.markdownDir },
+    realtime: {
+      database,
+      llm: createOpenRouter(config.openRouter),
+      inventory: createInventoryClient(config.inventory),
+      transcriber: createWhisperTranscriber(config.transcriber),
+      tts,
+      defaultTimezone: config.defaultTimezone,
+    },
     ...(mode.kind === "webhook"
       ? { webhook: { path: mode.path, handler: telegramWebhookHandler(bot, mode.secretToken) } }
       : {}),

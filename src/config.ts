@@ -13,6 +13,11 @@ export type Config = {
   /** The Inventory API the model's tools call over HTTP (ADR 0002), and the key this app's own one accepts. */
   inventory: { baseUrl: string; apiKey: string };
   transcriber: { ffmpegPath: string; whisperPath: string; modelPath: string };
+  realtime: {
+    /** Local TTS command, e.g. `say` (macOS) or `espeak-ng`/`piper`. `{input}` and `{output}` are replaced with temp file paths. */
+    ttsCommand: string;
+    ttsArgs: string[];
+  };
   firstAdmin: { username: string; password: string; telegramId: string };
 };
 
@@ -84,6 +89,14 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
       ffmpegPath: value("FFMPEG_PATH") ?? "ffmpeg",
       whisperPath: value("WHISPER_CLI_PATH") ?? "whisper-cli",
       modelPath: value("WHISPER_MODEL_PATH") ?? "./models/ggml-small.en.bin",
+    },
+    realtime: {
+      ttsCommand: value("TTS_COMMAND") ?? "say",
+      // `say` needs to be told to read the text file and write the audio file; other tools are configured in full.
+      ttsArgs: (value("TTS_ARGS") ?? ((value("TTS_COMMAND") ?? "say") === "say" ? "-f,{input},-o,{output}" : ""))
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean),
     },
     firstAdmin: {
       username: required("ADMIN_USERNAME"),
