@@ -45,11 +45,12 @@ export async function startSession(ctx: AssignContext, reply: FastifyReply, owne
 export function requireOwner(ctx: AssignContext) { return async (request: FastifyRequest, reply: FastifyReply) => {
   if (!await currentOwner(ctx, request, reply)) return reply.code(302).header("location", "/assign/login").send();
 }; }
+const linkProblem = (reply: FastifyReply) => render(reply.code(400), "message", { title: "Link expired", message: "This login link expired or was already used. Login links work once and last 15 minutes.", href: "/assign/login", linkText: "Get a new login link" });
 export function registerAuth(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign/login", async (_request, reply) => render(reply, "login"));
   app.post("/assign/login", async (request, reply) => {
     const email = field(parseForm(request.body), "email").toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return reply.code(400).send("Enter a valid email.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return render(reply.code(400), "login", { error: "Enter a valid email address, like name@example.com.", email, mode: "link" });
     const allowed = ctx.limiter.allow(`email:${email}`, 5, 900_000) && ctx.limiter.allow(`ip:${request.ip}`, 5, 900_000);
     const accountAllowed = ctx.config.signupMode === "open" || ctx.config.allowedEmails.includes(email) || await ctx.store.owners.countDocuments({ email }) > 0;
     if (allowed && accountAllowed) {
@@ -67,40 +68,42 @@ export function registerAuth(app: FastifyInstance, ctx: AssignContext) {
   app.post("/assign/auth", async (request, reply) => {
     const token = field(parseForm(request.body), "token");
     const login = token && await ctx.store.loginTokens.findOneAndUpdate({ tokenHash: sha256(token), usedAt: { $exists: false }, expiresAt: { $gt: ctx.now() } }, { $set: { usedAt: ctx.now() } });
-    if (!login) return reply.code(400).send("This link expired or was already used.");
+    if (!login) return linkProblem(reply);
     let owner = await ctx.store.owners.findOne({ email: login.email });
     if (!owner) {
-      if (!ctx.limiter.allow(`signup:${request.ip}`, 5, 3_600_000)) return reply.code(429).send("Try again later.");
-      if (ctx.config.signupMode === "allowlist" && !ctx.config.allowedEmails.includes(login.email)) return reply.code(400).send("This link expired or was already used.");
+      if (!ctx.limiter.allow(`signup:${request.ip}`, 5, 3_600_000)) return render(reply.code(429), "message", { title: "Too many attempts", message: "Too many new accounts from this network. Try again in an hour.", href: "/assign/login", linkText: "Back to log in" });
+      if (ctx.config.signupMode === "allowlist" && !ctx.config.allowedEmails.includes(login.email)) return linkProblem(reply);
       try { const result = await ctx.store.owners.insertOne({ email: login.email, createdAt: ctx.now(), lastSeenEventId: 0 }); owner = await ctx.store.owners.findOne({ _id: result.insertedId }); }
       catch { owner = await ctx.store.owners.findOne({ email: login.email }); }
     }
-    if (!owner) return reply.code(500).send("Could not create account.");
+    if (!owner) return render(reply.code(500), "message", { title: "Something went wrong", message: "We couldn't create your account. Please try again.", href: "/assign/login", linkText: "Back to log in" });
     await startSession(ctx, reply, owner);
     return reply.code(303).header("location", owner.offeredPassword ? "/assign" : "/assign/password-offer").send();
   });
   app.get("/assign/password-offer", { preHandler: requireOwner(ctx) }, async (_request, reply) => render(reply, "password-offer"));
   app.post("/assign/password-offer", { preHandler: requireOwner(ctx) }, async (request, reply) => {
     const owner = await currentOwner(ctx, request, reply); if (!owner) return;
-    const password = field(parseForm(request.body), "password");
-    if (password && password.length < 10) return reply.code(400).send("Password needs at least 10 characters.");
+    const form = parseForm(request.body);
+    const password = field(form, "skip") === "1" ? "" : field(form, "password");
+    if (password && password.length < 10) return render(reply.code(400), "password-offer", { error: "Password needs at least 10 characters. Choose a longer one, or skip for now." });
     await ctx.store.owners.updateOne({ _id: owner._id }, { $set: { offeredPassword: true, ...(password ? { passwordHash: hashPassword(password) } : {}) } });
     return reply.code(303).header("location", "/assign").send();
   });
   app.post("/assign/password-login", async (request, reply) => {
     const form = parseForm(request.body), email = field(form, "email").toLowerCase(), password = field(form, "password");
-    if (!ctx.limiter.allow(`password:${email}`, 5, 900_000)) return reply.code(429).send("Invalid email or password.");
+    const wrong = { error: "That email and password don't match. Check them, or log in with an email link instead.", email, mode: "password" };
+    if (!ctx.limiter.allow(`password:${email}`, 5, 900_000)) return render(reply.code(429), "login", wrong);
     const owner = await ctx.store.owners.findOne({ email });
-    if (!owner?.passwordHash || !verifyPassword(password, owner.passwordHash)) return reply.code(400).send("Invalid email or password.");
+    if (!owner?.passwordHash || !verifyPassword(password, owner.passwordHash)) return render(reply.code(400), "login", wrong);
     await startSession(ctx, reply, owner); return reply.code(303).header("location", "/assign").send();
   });
-  app.get("/assign/settings", { preHandler: requireOwner(ctx) }, async (_request, reply) => render(reply, "settings"));
+  app.get("/assign/settings", { preHandler: requireOwner(ctx) }, async (request, reply) => render(reply, "settings", { saved: (request.query as { saved?: string }).saved === "1" }));
   app.post("/assign/settings/password", { preHandler: requireOwner(ctx) }, async (request, reply) => {
     const owner = await currentOwner(ctx, request, reply); if (!owner) return;
-    const password = field(parseForm(request.body), "password"); if (password.length < 10) return reply.code(400).send("Password needs at least 10 characters.");
+    const password = field(parseForm(request.body), "password"); if (password.length < 10) return render(reply.code(400), "settings", { error: "Password needs at least 10 characters." });
     await ctx.store.owners.updateOne({ _id: owner._id }, { $set: { passwordHash: hashPassword(password), offeredPassword: true } });
     await ctx.store.refreshTokens.updateMany({ ownerId: owner._id }, { $set: { revokedAt: ctx.now() } });
-    await startSession(ctx, reply, owner); return reply.code(303).header("location", "/assign/settings").send();
+    await startSession(ctx, reply, owner); return reply.code(303).header("location", "/assign/settings?saved=1").send();
   });
   app.post("/assign/logout", async (request, reply) => {
     const hash = sha256(parseCookies(request.headers.cookie).ta_refresh || "");

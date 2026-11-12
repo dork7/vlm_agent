@@ -239,6 +239,12 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/tasks/${task._id}/status`, { status: "open" });
     expect((await store.tasks.findOne({ _id: task._id }))!.blockedReason).toBe("");
     expect((await owner.post("/assign/tasks", { title: "x".repeat(201) })).statusCode).toBe(400);
+    await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
+    expect((await owner.get(`/assign/tasks/${task._id}`)).body).toContain('<option value="done" selected>');
+    const missing = await owner.get("/assign/tasks/000000000000000000000000");
+    expect(missing.statusCode).toBe(404);
+    expect(missing.headers["content-type"]).toContain("text/html");
+    expect(missing.body).toContain("Go back");
   });
   it("explains deletions and removes Tasks and Lists from active links", async () => {
     const owner = browser(); await owner.login("owner@example.com");
@@ -251,7 +257,7 @@ describe("Task assignment workflow", () => {
     expect((await owner.get(`/assign/tasks/${task._id}/delete`)).body).toContain("Omar's link");
     await owner.post(`/assign/tasks/${task._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).not.toContain("Carry");
-    expect((await owner.get(`/assign/lists/${list._id}/delete`)).body).toContain("Revokes 1 active links");
+    expect((await owner.get(`/assign/lists/${list._id}/delete`)).body).toContain("Revokes 1 active link and");
     await owner.post(`/assign/lists/${list._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("no longer available");
   });

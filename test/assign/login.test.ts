@@ -76,11 +76,25 @@ describe("Task assignment login", () => {
     const cookies = (login.headers["set-cookie"] as string[]).map(x => x.split(";")[0]!).filter(x => x.startsWith("ta_access=") || x.startsWith("ta_refresh=")).join("; ");
     expect(login.headers.location).toBe("/assign/password-offer");
     expect((await post("/assign/password-offer", { password: "short" }, cookies)).statusCode).toBe(400);
+    expect((await post("/assign/password-offer", { password: "short" }, cookies)).body).toContain("at least 10 characters");
+    expect((await post("/assign/password-offer", { password: "typed-then-skipped", skip: "1" }, cookies)).statusCode).toBe(303);
+    expect((await post("/assign/password-login", { email: "owner@example.com", password: "typed-then-skipped" })).statusCode).toBe(400);
     expect((await post("/assign/password-offer", { password: "long-password" }, cookies)).statusCode).toBe(303);
-    for (let i = 0; i < 5; i++) expect((await post("/assign/password-login", { email: "owner@example.com", password: "wrong" })).statusCode).toBe(400);
+    for (let i = 0; i < 4; i++) expect((await post("/assign/password-login", { email: "owner@example.com", password: "wrong" })).statusCode).toBe(400);
     expect((await post("/assign/password-login", { email: "owner@example.com", password: "wrong" })).statusCode).toBe(429);
     expect((await post("/assign/logout-all", {}, cookies)).statusCode).toBe(303);
     expect((await app.inject({ method: "GET", url: "/assign", headers: { cookie: cookies } })).statusCode).toBe(302);
+  });
+  it("shows login problems as pages with a way forward", async () => {
+    const badEmail = await post("/assign/login", { email: "not-an-email" });
+    expect(badEmail.statusCode).toBe(400);
+    expect(badEmail.headers["content-type"]).toContain("text/html");
+    expect(badEmail.body).toContain('role="alert"');
+    expect(badEmail.body).toContain('value="not-an-email"');
+    const expired = await post("/assign/auth", { token: "nope" });
+    expect(expired.statusCode).toBe(400);
+    expect(expired.body).toContain('href="/assign/login"');
+    expect((await app.inject("/assign/login")).body).toMatch(/<label for="login-email">/);
   });
   it("keeps allowlist responses uniform and emails only allowed addresses", async () => {
     const sent: Mail[] = [];
