@@ -175,10 +175,12 @@ describe("Task assignment workflow", () => {
       const response = await fetch(`${address}/l/${assignment.code}/events`, { signal: controller.signal });
       expect(response.status).toBe(200);
       const reader = response.body!.getReader();
+      expect((await app.inject({ method: "POST", url: `/l/${assignment.code}/view` })).statusCode).toBe(204);
       await owner.post(`/assign/lists/${list._id}/revoke`);
       let text = "";
       for (let i = 0; i < 4 && !text.includes("event: revoked"); i++) text += new TextDecoder().decode((await reader.read()).value);
       expect(text).toContain("event: revoked");
+      expect(text).not.toContain("assignment.opened");
       expect((await reader.read()).done).toBe(true);
     } finally { controller.abort(); }
   });
@@ -257,6 +259,8 @@ describe("Task assignment workflow", () => {
     expect((await owner.get(`/assign/tasks/${task._id}/delete`)).body).toContain("Omar's link");
     await owner.post(`/assign/tasks/${task._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).not.toContain("Carry");
+    const listPage = (await owner.get(`/assign/lists/${list._id}`)).body;
+    expect(listPage).toMatch(/<dialog id="delete-list"[^>]*>.*Revokes 1 active link and returns 0 Tasks.*<form method="post" action="\/assign\/lists\/[a-f\d]{24}\/delete" class="actions"><input type="hidden" name="csrf"/s);
     expect((await owner.get(`/assign/lists/${list._id}/delete`)).body).toContain("Revokes 1 active link and");
     await owner.post(`/assign/lists/${list._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("no longer available");

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { ConfigError, loadConfig } from "./config.ts";
+import { ConfigError, DEFAULT_ADMIN, loadConfig } from "./config.ts";
 import { createCore } from "./core/core.ts";
 import { backfillReminderMarkers, deliverByChannel } from "./core/reminders.ts";
 import { connectDatabase } from "./db.ts";
@@ -33,6 +33,12 @@ async function main() {
 
   const database = await connectDatabase(config.mongo.uri, config.mongo.dbName);
   const assignConfig = loadAssignConfig(process.env);
+  if (config.firstAdmin.password === DEFAULT_ADMIN.password) {
+    console.warn(
+      `ADMIN_PASSWORD is not set, so a new first admin gets the default password "${DEFAULT_ADMIN.password}". ` +
+        "Set ADMIN_PASSWORD, or change the password from the dashboard after logging in.",
+    );
+  }
   await ensureFirstAdmin(database, { ...config.firstAdmin, timezone: config.defaultTimezone });
   // Before the first Reminder check, so Tasks saved before Reminders existed don't all get one at once.
   const backfill = await backfillReminderMarkers(database, config.defaultTimezone, new Date());

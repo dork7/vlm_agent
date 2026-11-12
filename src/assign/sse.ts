@@ -19,7 +19,8 @@ async function stream(ctx: AssignContext, request: FastifyRequest, reply: Fastif
   const deliver = (event: EventDoc) => {
     if (seen.has(event.seq) || reply.raw.destroyed) return;
     seen.add(event.seq);
-    if (!relevant(event)) return;
+    // The assignee's own visit changes nothing on their page; passing it on would make the page reload itself just after opening.
+    if (!relevant(event) || (listId && event.kind === "assignment.opened")) return;
     if (listId && ["assignment.revoke", "list.delete", "person.delete"].includes(event.kind)) { send(reply, "revoked", event); reply.raw.end(); return; }
     send(reply, "change", event);
   };

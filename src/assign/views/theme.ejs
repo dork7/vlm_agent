@@ -151,7 +151,11 @@
   aside[role="status"]:not(.sr-only), p[role="status"]:not(:empty).notice { padding: .9rem 1rem; margin: .7rem 0; border: 1px solid var(--accent); border-radius: .6rem; background: var(--accent-surface); }
   .copy-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
   .copy-row input { flex: 1 1 16rem; margin: 0; }
-  .theme-toggle { position: fixed; top: .65rem; right: .8rem; z-index: 10; background: var(--surface-3); font-size: .85rem; }
+  dialog { width: min(30rem, calc(100vw - 2rem)); padding: clamp(1.1rem, 3vw, 1.5rem); border: 1px solid var(--border); border-radius: .85rem; background: var(--surface-1); color: var(--text); box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 35%); }
+  dialog::backdrop { background: rgb(8 11 16 / 60%); }
+  dialog h2 { margin-top: 0; }
+  dialog form { margin: 1rem 0 0; }
+  .theme-toggle { position: absolute; top: .65rem; right: .8rem; z-index: 10; background: var(--surface-3); font-size: .85rem; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   @media (max-width: 42rem) { body { padding-top: 3.5rem; } nav { gap: .1rem; } nav a { padding: .35rem .5rem; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; } }

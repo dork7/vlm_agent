@@ -21,4 +21,4 @@ cp .env.example .env # then fill it in
 npm start            # start the app (Telegram long polling + Fastify)
 ```
 
-Startup fails with a message naming any missing required environment variable. With no Users in the database, it creates the first admin from `ADMIN_USERNAME`, `ADMIN_PASSWORD` and `ADMIN_TELEGRAM_ID` (your numeric Telegram user ID).
+Startup fails with a message naming any missing required environment variable. With no Users in the database, it creates the first admin from `ADMIN_USERNAME`, `ADMIN_PASSWORD` and `ADMIN_TELEGRAM_ID` (your numeric Telegram user ID). The username and password default to `admin` / `changeme` when unset; startup prints a warning while the default password is in use, so set your own before the app is reachable by anyone else.
