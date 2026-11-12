@@ -96,4 +96,15 @@ describe("Task assignment login", () => {
     expect(sent.map(x => x.to)).toEqual(["allowed@example.com"]);
     await restricted.close();
   });
+  it("offers system and manual appearance controls on auth and link pages", async () => {
+    const login = await app.inject("/assign/login");
+    const unavailable = await app.inject("/l/AbCd123456");
+    for (const response of [login, unavailable]) {
+      expect(response.body).toContain("prefers-color-scheme: light");
+      expect(response.body).toContain("Appearance:");
+      expect(response.body).toContain("aria-live");
+      expect(response.body).toContain("--surface-1");
+    }
+    expect(unavailable.headers["x-robots-tag"]).toBe("noindex");
+  });
 });
