@@ -71,3 +71,35 @@ _Avoid_: Job, trace, execution, request
 **Inventory**:
 The stock of items, with their quantities, that the bot can look up on the person's behalf.
 _Avoid_: Stock, catalogue, warehouse
+
+## Task assignment (separate module)
+
+These terms belong to the Task assignment module in `src/assign/` only; it shares no data with the bot's Users, Notes or Tasks.
+
+**Owner**:
+A person with a Task assignment account (email login) and a private workspace. Not the same as a bot User.
+_Avoid_: User, admin, manager
+
+**Assigned Task**:
+One thing to do in an Owner's workspace: a title, tags, an optional instruction, note and blocked reason, and a status of open, blocked or done. Called "Task" inside the module.
+_Avoid_: Job, item, to-do
+
+**List**:
+A named group of an Owner's Assigned Tasks; an Assigned Task is in at most one List at a time.
+_Avoid_: Checklist, group, project
+
+**Person**:
+Someone an Owner gives Lists to, known only by a name; never has an account.
+_Avoid_: Contact, worker, member
+
+**Assignee**:
+A Person while using an Assignment's link page.
+_Avoid_: Guest, viewer
+
+**Assignment**:
+One List given to one Person, with its own unguessable, revocable link.
+_Avoid_: Share, invite, link
+
+**Board**:
+The Owner's overview of who is doing what, with the activity feed.
+_Avoid_: Dashboard, overview
