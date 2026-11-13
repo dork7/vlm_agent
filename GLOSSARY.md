@@ -81,12 +81,28 @@ A person with a Task assignment account (email login) and a private workspace. N
 _Avoid_: User, admin, manager
 
 **Assigned Task**:
-One thing to do in an Owner's workspace: a title, tags, an optional instruction, note and blocked reason, and a status of open, blocked or done. Called "Task" inside the module.
+One thing to do in an Owner's workspace: a title, tags, an optional instruction, an optional Deadline, one Note, and a status of open, blocked or done. Called "Task" inside the module.
 _Avoid_: Job, item, to-do
+
+**Note**:
+The single free-text field on an Assigned Task where the Owner or Assignee says anything about it, including what is blocking it. Replaces the former separate blocked reason. Not the same as a bot Note.
+_Avoid_: Blocked reason, comment, reason
+
+**Deadline**:
+The optional date and time by which an Assigned Task should be done; when only a date is given, the time is the end of that day.
+_Avoid_: Due date, due time, expiry
 
 **List**:
 A named group of an Owner's Assigned Tasks; an Assigned Task is in at most one List at a time.
 _Avoid_: Checklist, group, project
+
+**Additional Task**:
+An Assigned Task added to a List after that List was assigned; Tasks added before assignment are not. Shown with an "Additional task" tag.
+_Avoid_: New task, late task, extra task
+
+**Removed Task**:
+A Task taken out of an assigned List, or deleted, after assignment; the Assignee still sees its title marked "Removed", with nothing to act on.
+_Avoid_: Deleted task, cancelled task
 
 **Person**:
 Someone an Owner gives Lists to, known only by a name; never has an account.

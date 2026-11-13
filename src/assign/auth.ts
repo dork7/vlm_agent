@@ -6,6 +6,7 @@ import { hashPassword, randomToken, sha256, signJwt, verifyJwt, verifyPassword }
 import { clearCookie, field, parseCookies, parseForm, render, setCookie } from "./http.ts";
 
 export async function currentOwner(ctx: AssignContext, request: FastifyRequest, reply?: FastifyReply) {
+  if (ctx.config.noLogin && request.url.startsWith("/assign")) return ctx.store.owners.findOneAndUpdate({ email: "local@task-assignment.test" }, { $setOnInsert: { email: "local@task-assignment.test", createdAt: ctx.now(), lastSeenEventId: 0 } }, { upsert: true, returnDocument: "after" });
   const cookies = parseCookies(request.headers.cookie);
   const token = cookies.ta_access;
   const refresh = cookies.ta_refresh;
@@ -47,6 +48,7 @@ export function requireOwner(ctx: AssignContext) { return async (request: Fastif
 }; }
 const linkProblem = (reply: FastifyReply) => render(reply.code(400), "message", { title: "Link expired", message: "This login link expired or was already used. Login links work once and last 15 minutes.", href: "/assign/login", linkText: "Get a new login link" });
 export function registerAuth(app: FastifyInstance, ctx: AssignContext) {
+  if (ctx.config.noLogin) { app.get("/assign/login", async (_request, reply) => reply.code(303).header("location", "/assign").send()); return; }
   app.get("/assign/login", async (_request, reply) => render(reply, "login"));
   app.post("/assign/login", async (request, reply) => {
     const email = field(parseForm(request.body), "email").toLowerCase();

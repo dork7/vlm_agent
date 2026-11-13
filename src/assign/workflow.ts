@@ -14,19 +14,19 @@ const esc = (x: unknown) => ejs.escapeXML(String(x ?? ""));
 const themeMarkup = readFileSync(new URL("./views/theme.ejs", import.meta.url), "utf8");
 const navMarkup = ejs.compile(readFileSync(new URL("./views/nav.ejs", import.meta.url), "utf8"));
 const taskViewScript = readFileSync(new URL("./views/task-view.ejs", import.meta.url), "utf8");
-type PageOptions = { live?: string; assignee?: boolean; current?: string };
+type PageOptions = { live?: string; assignee?: boolean; current?: string; noLogin?: boolean };
 // Live pages reload on change, unless the person has started typing: then they get a notice instead of losing their input.
-const liveScript = (live: string) => `<script>(()=>{const main=document.getElementById('main');const notice=(role,text)=>{const n=document.createElement('aside');n.setAttribute('role',role);n.textContent=text;main.prepend(n);return n};const alertText=sessionStorage.getItem('ta_alert');if(alertText){notice('alert',alertText);sessionStorage.removeItem('ta_alert')}let dirty=false,leaving=false;document.addEventListener('input',e=>{if(e.target.form)dirty=true});document.addEventListener('submit',e=>{const method=(e.submitter&&e.submitter.getAttribute('formmethod'))||e.target.getAttribute('method');if(method!=='dialog')leaving=true});addEventListener('beforeunload',()=>{leaving=true});const refresh=text=>{if(leaving)return;if(!dirty){location.reload();return}if(document.getElementById('ta-stale'))return;const n=notice('status',(text||'This page has updates.')+' ');n.id='ta-stale';const b=document.createElement('button');b.type='button';b.textContent='Reload to see them';b.addEventListener('click',()=>location.reload());n.append(b)};const stream=new EventSource(${JSON.stringify(live)});stream.addEventListener('change',e=>{const event=JSON.parse(e.data);if(location.pathname==='/assign'&&['task.status','assignment.opened'].includes(event.kind))sessionStorage.setItem('ta_alert',event.summary||'Activity updated');refresh(event.summary)});stream.addEventListener('reset',()=>refresh());stream.addEventListener('revoked',()=>{if(!leaving)location.reload()})})()</script>`;
-const pageScript = `<script>for(const t of document.querySelectorAll('time[datetime]')){const d=new Date(t.dateTime),minutes=Math.max(0,Math.floor((Date.now()-d.getTime())/60000));t.title=d.toLocaleString();t.textContent=minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.floor(minutes/60)+' h ago':d.toLocaleString();}for(const s of document.querySelectorAll('select[name="status"]')){const r=s.form&&s.form.elements.namedItem('reason');if(!(r instanceof HTMLInputElement))continue;const wrap=r.closest('.field')||r;const sync=()=>{const blocked=s.value==='blocked';r.required=blocked;wrap.hidden=!blocked};s.addEventListener('change',sync);sync()}document.addEventListener('click',e=>{const b=e.target instanceof Element&&e.target.closest('[data-copy]');if(!b)return;const input=document.getElementById(b.dataset.copy),out=document.getElementById(b.dataset.copy+'-status');const say=m=>{if(out)out.textContent=m};(navigator.clipboard?navigator.clipboard.writeText(input.value):Promise.reject()).then(()=>say('Link copied.'),()=>{input.select();say('Could not copy automatically. The link is selected: press Ctrl+C or Cmd+C.')})});document.addEventListener('click',e=>{const opener=e.target instanceof Element&&e.target.closest('[data-dialog]');const dialog=opener&&document.getElementById(opener.dataset.dialog);if(!(dialog instanceof HTMLDialogElement)||!dialog.showModal)return;e.preventDefault();dialog.addEventListener('close',()=>opener.focus(),{once:true});dialog.showModal()});for(const d of document.querySelectorAll('dialog'))d.addEventListener('click',e=>{if(e.target===d)d.close()})</script>`;
-const page = (title: string, body: string, { live, assignee = false, current }: PageOptions = {}) => {
+const liveScript = (live: string) => `<script>(()=>{const main=document.getElementById('main');const notice=(role,text)=>{const n=document.createElement('aside');n.setAttribute('role',role);n.textContent=text;main.prepend(n);return n};const alertText=sessionStorage.getItem('ta_alert');if(alertText){notice('alert',alertText);sessionStorage.removeItem('ta_alert')}let dirty=false,leaving=false;document.addEventListener('input',e=>{if(e.target.form)dirty=true});document.addEventListener('submit',e=>{const method=(e.submitter&&e.submitter.getAttribute('formmethod'))||e.target.getAttribute('method');if(method!=='dialog')leaving=true});addEventListener('beforeunload',()=>{leaving=true});const refresh=text=>{if(leaving)return;if(!dirty){location.reload();return}if(document.getElementById('ta-stale'))return;const n=notice('status',(text||'This page has updates.')+' ');n.id='ta-stale';const b=document.createElement('button');b.type='button';b.textContent='Reload to see them';b.addEventListener('click',()=>location.reload());n.append(b)};const stream=new EventSource(${JSON.stringify(live)});stream.addEventListener('change',e=>{const event=JSON.parse(e.data);if(event.kind==='list.add'||event.kind==='list.remove'){if(location.pathname.startsWith('/l/'))sessionStorage.setItem('ta_alert',event.summary||'List updated');refresh(event.summary);return}if(location.pathname==='/assign'&&['task.status','assignment.opened'].includes(event.kind))sessionStorage.setItem('ta_alert',event.summary||'Activity updated');refresh(event.summary)});stream.addEventListener('reset',()=>refresh());stream.addEventListener('revoked',()=>{if(!leaving)location.reload()})})()</script>`;
+const pageScript = `<script>for(const t of document.querySelectorAll('time[datetime]')){const d=new Date(t.dateTime);t.title=d.toLocaleString();t.textContent=t.dataset.absolute!==undefined?d.toLocaleString():d.toLocaleString()}document.addEventListener('click',e=>{const b=e.target instanceof Element&&e.target.closest('[data-copy]');if(!b)return;const input=document.getElementById(b.dataset.copy),out=document.getElementById(b.dataset.copy+'-status');const say=m=>{if(out)out.textContent=m};(navigator.clipboard?navigator.clipboard.writeText(input.value):Promise.reject()).then(()=>say('Link copied.'),()=>{input.select();say('Could not copy automatically. The link is selected: press Ctrl+C or Cmd+C.')})});document.addEventListener('click',e=>{const opener=e.target instanceof Element&&e.target.closest('[data-dialog]');const dialog=opener&&document.getElementById(opener.dataset.dialog);if(!(dialog instanceof HTMLDialogElement)||!dialog.showModal)return;e.preventDefault();dialog.addEventListener('close',()=>opener.focus(),{once:true});dialog.showModal()});for(const d of document.querySelectorAll('dialog'))d.addEventListener('click',e=>{if(e.target===d)d.close()});document.addEventListener('click',e=>{const b=e.target instanceof Element&&e.target.closest('[data-block]');if(!b)return;e.preventDefault();const f=b.closest('form');const box=f.querySelector('[data-block-note]');box.hidden=false;box.querySelector('textarea').focus()});const picked=()=>{const n=document.querySelectorAll('input[name=taskIds]:checked').length;for(const b of document.querySelectorAll('[data-selection-action]'))b.disabled=!n};document.addEventListener('change',e=>{if(e.target.matches('input[name=taskIds]'))picked()});picked();for(const d of document.querySelectorAll('dialog[data-reopen]'))d.showModal();</script>`;
+const page = (title: string, body: string, { live, assignee = false, current, noLogin = false }: PageOptions = {}) => {
   const isAssignee = assignee || !!live?.startsWith("/l/");
   const heading = `<div class="page-heading"><p class="eyebrow">${isAssignee ? "Your assignment" : "Task assignment"}</p><h1>${esc(title)}</h1></div>`;
   const shell = isAssignee
     ? `<div class="assignee-shell"><header class="assignee-top"><span class="brand-mark">TA</span><span class="brand-wordmark">Task assignment</span><span class="secure-label">Private list</span></header><main id="main" class="assignee-main">${heading}${body}</main></div>`
-    : `<div class="app-shell"><aside class="sidebar"><a class="brand" href="/assign"><span class="brand-mark">TA</span><span class="brand-wordmark">Task assignment<small>Workspace</small></span></a><p class="nav-label">Workspace</p>${navMarkup({ current })}<div class="sidebar-footer">Plan work. Share one link.<br>See what gets done.</div></aside><div class="main-panel"><header class="topbar"><span>Workspace <span class="crumb-separator">/</span> ${esc(title)}</span><span class="live-label"><span class="live-dot"></span> Live workspace</span></header><main id="main" class="content">${heading}${body}</main></div></div>`;
+    : `<div class="app-shell"><aside class="sidebar"><a class="brand" href="/assign"><span class="brand-mark">TA</span><span class="brand-wordmark">Task assignment<small>Workspace</small></span></a><p class="nav-label">Workspace</p>${navMarkup({ current, noLogin })}<div class="sidebar-footer">Plan work. Share one link.<br>See what gets done.</div></aside><div class="main-panel"><header class="topbar"><span>Workspace <span class="crumb-separator">/</span> ${esc(title)}</span><span class="live-label"><span class="live-dot"></span> Live workspace</span></header><main id="main" class="content">${heading}${body}</main></div></div>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${isAssignee ? '<meta name="robots" content="noindex">' : ""}<title>${esc(title)}${isAssignee ? "" : " · Task assignment"}</title>${themeMarkup}</head><body class="${isAssignee ? "assignee-page" : "assign-page"}"><a class="skip-link" href="#main">Skip to content</a>${shell}${live ? liveScript(live) : ""}${pageScript}</body></html>`;
 };
-const send = (reply: FastifyReply, title: string, body: string, options: PageOptions = {}) => reply.type("text/html; charset=utf-8").send(page(title, body, options));
+const sendPage = (reply: FastifyReply, title: string, body: string, options: PageOptions = {}) => reply.type("text/html; charset=utf-8").send(page(title, body, options));
 const redirect = (reply: FastifyReply, path: string) => reply.code(303).header("location", path).send();
 const backPath = (request: FastifyRequest) => {
   try { const from = new URL(String(request.headers.referer || "")); if (from.host === request.headers.host && from.pathname !== request.url) return from.pathname + from.search; } catch { /* no usable referer */ }
@@ -41,7 +41,10 @@ const statusLabel: Record<TaskStatus, string> = { open: "Open", blocked: "Blocke
 const badge = (status: TaskStatus) => `<span class="badge ${status}">${statusLabel[status]}</span>`;
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const timeTag = (at: Date) => `<time datetime="${at.toISOString()}">${at.toISOString().slice(0, 16).replace("T", " ")} UTC</time>`;
-const statusForm = (action: string, task: TaskDoc & { _id: ObjectId }) => `<form method="post" action="${action}"><div class="field"><label for="status-${task._id}">Status</label><select id="status-${task._id}" name="status">${STATUSES.map(s => `<option value="${s}"${s === task.status ? " selected" : ""}>${statusLabel[s]}</option>`).join("")}</select></div><div class="field"><label for="reason-${task._id}">What's blocking it?</label><small class="hint" id="reason-${task._id}-hint">Required when the status is Blocked.</small><input id="reason-${task._id}" name="reason" maxlength="2000" aria-describedby="reason-${task._id}-hint"></div><button>Save status</button></form>`;
+const deadlineTag = (task: TaskDoc, now: Date) => task.deadline ? `<span class="deadline${task.status !== "done" && task.deadline < now ? " overdue" : ""}">Deadline <time data-absolute datetime="${task.deadline.toISOString()}">${task.deadline.toISOString()}</time>${task.status !== "done" && task.deadline < now ? " · Overdue" : ""}</span>` : "";
+const additionalTag = (task: TaskDoc, list?: ListDoc | null) => list?.firstAssignedAt && task.addedToListAt && task.addedToListAt >= list.firstAssignedAt ? ' <span class="badge">Additional task</span>' : "";
+const statusForm = (action: string, task: TaskDoc & { _id: ObjectId }) => `<form method="post" action="${action}" class="status-actions">${task.status === "open" ? `<button type="button" data-block>Blocked</button><button name="status" value="done">Done</button>` : task.status === "blocked" ? `<button name="status" value="done">Done</button><button name="status" value="open">Reopen</button>` : `<button name="status" value="open">Reopen</button>`}<div data-block-note hidden><label for="block-note-${task._id}">Note</label><small class="hint">Say what's blocking you here, if anything.</small><textarea id="block-note-${task._id}" name="note" maxlength="2000">${esc(task.note)}</textarea><button name="status" value="blocked">Save Blocked</button></div></form>`;
+const taskDisclosure = (task: TaskDoc & { _id: ObjectId }, action: string, now: Date, list?: ListDoc | null, owner = false, noteAction?: string) => `<article class="task-row"><div class="task-heading">${owner ? task.listId ? `<span class="hint">In <a href="/assign/lists/${task.listId}">${esc(list?.name || "a List")}</a></span>` : `<label><input type="checkbox" name="taskIds" value="${task._id}" form="select-tasks">Select ${esc(task.title)}</label>` : ""}<details><summary>${owner ? `<a href="/assign/tasks/${task._id}">${esc(task.title)}</a>` : esc(task.title)} ${badge(task.status)}${additionalTag(task,list)} ${deadlineTag(task,now)}</summary><div>${task.instruction ? `<p class="instruction">${esc(task.instruction)}</p>` : ""}${task.tags.length ? `<p>Tags: ${task.tags.map(esc).join(", ")}</p>` : ""}${deadlineTag(task,now)}${noteAction ? noteForm(noteAction, task, "Say what's blocking you here, if anything.") : task.note ? `<p>Note: ${esc(task.note)}</p>` : ""}</div></details>${statusForm(action,task)}</div></article>`;
 const noteForm = (action: string, task: TaskDoc & { _id: ObjectId }, hint: string) => `<form method="post" action="${action}"><div class="field"><label for="note-${task._id}">Note</label><small class="hint" id="note-${task._id}-hint">${hint}</small><textarea id="note-${task._id}" name="note" maxlength="2000" aria-describedby="note-${task._id}-hint">${esc(task.note)}</textarea></div><button>Save note</button></form>`;
 const deleteListMessage = (active: number, count: number) => `Revokes ${plural(active, "active link")} and returns ${plural(count, "Task")} to Unassigned Tasks. The Tasks themselves are kept.`;
 // Native modal: traps focus, closes on Escape. The link still opens the confirmation page when scripts are off.
@@ -66,40 +69,102 @@ async function ownList(ctx: AssignContext, owner: OwnerDoc & { _id: ObjectId }, 
 async function activeAssignment(ctx: AssignContext, code: string) {
   return /^[A-Za-z0-9]{10}$/.test(code) ? ctx.store.assignments.findOne({ code, active: true }) : null;
 }
-async function statusChange(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }, status: TaskStatus, reason: string, actor?: { name: string; personId: ObjectId }) {
-  if (status === "blocked" && !reason) return "Blocked needs a reason.";
-  if (!textLimit(reason, 2000)) return "Reason is too long.";
+function deadlineFrom(form: ReturnType<typeof parseForm>): Date | null | "invalid" {
+  const datePart = field(form, "deadlineDate"), timePart = field(form, "deadlineTime");
+  const raw = field(form, "deadline") || (datePart ? `${datePart}${timePart ? `T${timePart}` : ""}` : timePart ? "invalid" : "");
+  if (!raw) return null;
+  const offset = field(form, "timezoneOffset");
+  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/.test(raw) || (offset && !/^-?\d{1,4}$/.test(offset))) return "invalid";
+  const local = raw.includes("T") ? raw : `${raw}T23:59`;
+  const date = new Date(`${local}:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0,16) !== local) return "invalid";
+  const minutes = Number(offset || 0); if (Math.abs(minutes) > 840) return "invalid";
+  return new Date(date.getTime() + minutes * 60_000);
+}
+function addTaskFailure(reply: FastifyReply, form: ReturnType<typeof parseForm>, message: string) {
+  const body = `<p><a href="/assign/tasks">← Tasks</a></p><p class="error" role="alert">${esc(message)}</p><dialog id="add-task" data-reopen aria-labelledby="add-task-title"><h2 id="add-task-title">Add Task</h2><p class="error" role="alert">${esc(message)}</p><form method="post" action="/assign/tasks"><label>Title <input name="title" maxlength="200" required value="${esc(field(form,"title"))}"></label><label>Tags <input name="tags" value="${esc(field(form,"tags"))}"></label><label>Instructions <textarea name="instruction" maxlength="2000">${esc(field(form,"instruction"))}</textarea></label><label>Deadline <input type="date" name="deadlineDate" value="${esc(field(form,"deadlineDate"))}"></label><label>Time <input type="time" name="deadlineTime" value="${esc(field(form,"deadlineTime"))}"></label><input type="hidden" name="timezoneOffset" value="${esc(field(form,"timezoneOffset"))}"><button>Add Task</button><button type="button" onclick="this.closest('dialog').close()">Cancel</button></form></dialog>`;
+  return reply.code(400).type("text/html; charset=utf-8").send(page("Tasks",body,{current:"/assign/tasks"}));
+}
+async function statusChange(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }, status: TaskStatus, note: string, actor?: { name: string; personId: ObjectId }) {
+  if (!textLimit(note, 2000)) return "Note is too long.";
+  const allowed = (task.status === "open" && ["blocked","done"].includes(status)) || (task.status === "blocked" && ["open","done"].includes(status)) || (task.status === "done" && status === "open");
+  if (!allowed) return "Invalid status transition.";
   const before = task.status;
-  await ctx.store.tasks.updateOne({ _id: task._id, ownerId: task.ownerId }, { $set: { status, blockedReason: status === "blocked" ? reason : "", updatedAt: ctx.now() } });
-  await recordEvent(ctx, task.ownerId, "task.status", { taskId: task._id, listId: task.listId, personId: actor?.personId, fromValue: before, toValue: `${status}${reason ? `: ${reason}` : ""}`, summary: `${actor?.name || "Owner"} marked ${task.title} ${status}` });
+  const savedNote = status === "blocked" ? note : task.note;
+  await ctx.store.tasks.updateOne({ _id: task._id, ownerId: task.ownerId }, { $set: { status, note: savedNote, updatedAt: ctx.now() } });
+  await recordEvent(ctx, task.ownerId, "task.status", { taskId: task._id, listId: task.listId, personId: actor?.personId, fromValue: before, toValue: `${status}${savedNote ? `: ${savedNote}` : ""}`, summary: `${actor?.name || "Owner"} marked ${task.title} ${status}` });
   if (task.listId && status !== "done") await ctx.store.lists.updateOne({ _id: task.listId, ownerId: task.ownerId }, { $unset: { completedAt: "" } });
-  if (task.listId && status === "done" && before !== "done") {
-    const remaining = await ctx.store.tasks.countDocuments({ ownerId: task.ownerId, listId: task.listId, status: { $ne: "done" } });
-    if (!remaining) {
-      const won = await ctx.store.lists.findOneAndUpdate({ _id: task.listId, ownerId: task.ownerId, completedAt: { $exists: false } }, { $set: { completedAt: ctx.now() } });
-      if (won) await recordEvent(ctx, task.ownerId, "list.complete", { listId: task.listId });
-    }
-  }
+  if (task.listId && status === "done") await syncCompletion(ctx, task.ownerId, task.listId);
   return null;
 }
+async function syncCompletion(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId) {
+  const [total, pending] = await Promise.all([ctx.store.tasks.countDocuments({ ownerId, listId }), ctx.store.tasks.countDocuments({ ownerId, listId, status: { $ne: "done" } })]);
+  if (total && !pending) { const won = await ctx.store.lists.findOneAndUpdate({ _id: listId, ownerId, completedAt: { $exists: false } }, { $set: { completedAt: ctx.now() } }); if (won) await recordEvent(ctx, ownerId, "list.complete", { listId }); }
+  else await ctx.store.lists.updateOne({ _id: listId, ownerId }, { $unset: { completedAt: "" } });
+}
+const inactiveMessage = (replaced: boolean) => replaced ? "This link has been replaced by a newer one." : "This List has been revoked. Ask the person who sent it for a new link.";
+async function inactiveLink(ctx: AssignContext, code: string, reply: FastifyReply) { const old = await ctx.store.assignments.findOne({ code }); reply.header("X-Robots-Tag", "noindex"); return sendPage(reply, "Link no longer available", `<p>${inactiveMessage(!!old?.replacedAt)}</p>`, { assignee: true }); }
+async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }) {
+  if (!task.listId) return;
+  const list = await ctx.store.lists.findOne({ _id: task.listId, ownerId: task.ownerId });
+  if (!list) return;
+  await ctx.store.lists.updateOne({ _id: list._id, ownerId: task.ownerId }, { $inc: { taskCount: -1 }, ...(list.firstAssignedAt ? { $pull: { removedTasks: { taskId: task._id } } } : {}) });
+  if (list.firstAssignedAt) {
+    await ctx.store.lists.updateOne({ _id: list._id, ownerId: task.ownerId }, { $push: { removedTasks: { taskId: task._id, title: task.title, removedAt: ctx.now() } } });
+    const active = await ctx.store.assignments.findOne({ ownerId: task.ownerId, listId: list._id, active: true });
+    await recordEvent(ctx, task.ownerId, "list.remove", { listId: list._id, taskId: task._id, fromValue: task.title, summary: active ? `Task removed: ${task.title}` : undefined });
+  }
+  await syncCompletion(ctx, task.ownerId, list._id);
+}
 
+async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId, name: string) {
+  let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() });
+  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() }); } }
+  if (!person) throw new Error("Could not create Person");
+  const previous = await ctx.store.assignments.findOne({ ownerId, listId, active: true });
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
+  while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
+  if (previous) await ctx.store.assignments.updateMany({ ownerId, listId, active: true }, { $set: { active: false, revokedAt: ctx.now(), replacedAt: ctx.now() } });
+  try { await ctx.store.assignments.insertOne({ ownerId, listId, personId: person._id, code, active: true, viewCount: 0 }); }
+  catch (error) { if (previous) await ctx.store.assignments.updateOne({ _id: previous._id }, { $set: { active: true }, $unset: { revokedAt: "", replacedAt: "" } }); throw error; }
+  await ctx.store.lists.updateOne({ _id: listId, ownerId }, { $set: { status: "active" } });
+  await ctx.store.lists.updateOne({ _id: listId, ownerId, firstAssignedAt: { $exists: false } }, { $set: { firstAssignedAt: ctx.now() } });
+  if (previous) await recordEvent(ctx, ownerId, "assignment.revoke", { listId, personId: previous.personId });
+  await recordEvent(ctx, ownerId, "assignment.create", { listId, personId: person._id });
+}
+async function addTasks(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }, ids: ObjectId[]) {
+  if (!ids.length || ids.length > 50 || list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
+  const tasks = await ctx.store.tasks.find({ ownerId, _id: { $in: ids } }).toArray();
+  if (tasks.length !== ids.length || tasks.some(t => t.listId)) return "Task already in another List or not found.";
+  const now = ctx.now();
+  const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" }, $pull: { removedTasks: { taskId: { $in: ids } } } });
+  if (!reserved.modifiedCount) return "A List holds at most 50 Tasks.";
+  const attached = await ctx.store.tasks.updateMany({ ownerId, _id: { $in: ids }, listId: { $exists: false } }, { $set: { listId: list._id, ...(list.firstAssignedAt ? { addedToListAt: now } : {}) } });
+  if (attached.modifiedCount !== ids.length) { await ctx.store.tasks.updateMany({ ownerId, listId: list._id, _id: { $in: ids } }, { $unset: { listId: "", addedToListAt: "" } }); await ctx.store.lists.updateOne({ _id: list._id }, { $inc: { taskCount: -ids.length } }); return "A Task was added to another List. Try again."; }
+  if (list.status === "active") for (const task of tasks) await recordEvent(ctx, ownerId, "list.add", { listId: list._id, taskId: task._id, fromValue: task.title, summary: `New Task added: ${task.title}` });
+  return null;
+}
 export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
+  const send = (reply: FastifyReply, title: string, body: string, options: PageOptions = {}) => sendPage(reply, title, body, { ...options, noLogin: ctx.config.noLogin });
   app.get("/assign/tasks", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const tag = String((request.query as { tag?: string }).tag || "").toLowerCase();
-    const [tasks, lists] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, ...(tag ? { tags: tag } : {}) }).sort({ createdAt: -1 }).toArray(), ctx.store.lists.find({ ownerId: owner._id }).toArray()]);
+    const [tasks, allTasks, lists] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, ...(tag ? { tags: tag } : {}) }).sort({ createdAt: -1 }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray(), ctx.store.lists.find({ ownerId: owner._id }).toArray()]);
     const listName = (id: ObjectId) => lists.find(l => l._id.equals(id))?.name || "a List";
-    const create = `<section><h2>Add a Task</h2><form method="post" action="/assign/tasks"><div class="field"><label for="task-title">Title</label><input id="task-title" name="title" maxlength="200" required></div><div class="field"><label for="task-tags">Tags <span class="hint">(optional)</span></label><small class="hint" id="task-tags-hint">Up to 5, separated by commas. Example: kitchen, urgent</small><input id="task-tags" name="tags" aria-describedby="task-tags-hint"></div><div class="field"><label for="task-instruction">Instructions <span class="hint">(optional)</span></label><small class="hint" id="task-instruction-hint">What the assignee needs to know to get it done.</small><textarea id="task-instruction" name="instruction" maxlength="2000" aria-describedby="task-instruction-hint"></textarea></div><button>Add Task</button></form></section>`;
+    const create = `<button type="button" data-dialog="add-task" aria-haspopup="dialog">Add Task</button><dialog id="add-task" aria-labelledby="add-task-title"><h2 id="add-task-title">Add Task</h2><form method="post" action="/assign/tasks"><div class="field"><label for="task-title">Title</label><input id="task-title" name="title" maxlength="200" required></div><div class="field"><label for="task-tags">Tags</label><input id="task-tags" name="tags" placeholder="kitchen, urgent"></div><div class="field"><label for="task-instruction">Instructions</label><textarea id="task-instruction" name="instruction" maxlength="2000"></textarea></div><div class="field"><label for="task-deadline">Deadline</label><input id="task-deadline" name="deadlineDate" type="date"><label for="task-deadline-time">Time (defaults to 23:59)</label><input id="task-deadline-time" name="deadlineTime" type="time"></div><input type="hidden" name="timezoneOffset"><button>Add Task</button><button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button></form></dialog>`;
     const filter = `<form class="filters" role="search" aria-label="Filter Tasks"><div class="field"><label for="tag-filter">Filter by tag</label><input id="tag-filter" name="tag" value="${esc(tag)}"></div><div class="actions"><button>Filter</button>${tag ? '<a href="/assign/tasks">Show all Tasks</a>' : ""}</div></form>`;
-    const items = tasks.length ? `<div id="task-collection" class="task-collection" data-view="list">${tasks.map(t => `<article><div class="task-heading">${taskLink(t)}</div><div class="task-meta muted">${t.tags.length ? `<span>${t.tags.map(esc).join(", ")}</span>` : ""}${t.listId ? `<span>In <a href="/assign/lists/${t.listId}">${esc(listName(t.listId))}</a></span>` : ""}</div></article>`).join("")}</div>` : `<p class="empty">${tag ? `No Tasks tagged “${esc(tag)}”.` : "No Tasks yet. Add your first one above."}</p>`;
+    const items = tasks.length ? `<div id="task-collection" class="task-collection" data-view="list">${tasks.map(t => taskDisclosure(t, `/assign/tasks/${t._id}/status`, ctx.now(), t.listId ? lists.find(l => l._id.equals(t.listId!)) : null, true)).join("")}</div>` : `<p class="empty">${tag ? `No Tasks tagged “${esc(tag)}”.` : "No Tasks yet. Add your first one above."}</p>`;
     const viewToggle = tasks.length ? '<div id="task-view-toggle" class="view-toggle" role="group" aria-label="Task view" hidden><button type="button" data-task-view="list" aria-controls="task-collection" aria-pressed="true">List</button><button type="button" data-task-view="grid" aria-controls="task-collection" aria-pressed="false">Grid</button></div>' : "";
-    return send(reply, "Tasks", `${create}${filter}<div class="task-toolbar"><h2>${tag ? `Tasks tagged “${esc(tag)}”` : "All Tasks"} (${tasks.length})</h2>${viewToggle}</div>${items}${taskViewScript}`, { live: "/assign/events", current: "/assign/tasks" });
+    const sidebar = `<aside class="list-sidebar"><h2>Lists</h2>${lists.map(l => { const mine = allTasks.filter(t => t.listId?.equals(l._id)); return `<p><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="badge">${l.status === "active" ? "Assigned" : "Draft"}</span> ${mine.filter(t=>t.status==="done").length}/${mine.length}</p>` }).join("") || '<p>No Lists yet.</p>'}</aside>`;
+    const selected = `<form id="select-tasks" method="post" action="/assign/lists"><button type="button" data-selection-action data-dialog="create-list" disabled>Create List</button><button type="button" data-selection-action data-dialog="add-to-list" disabled>Add to List</button></form><dialog id="create-list" aria-labelledby="create-list-title"><h2 id="create-list-title">Create List</h2><form method="post" action="/assign/lists" id="create-list-form"><label>List name <input name="name" maxlength="200" required></label><label>Person (optional) <input name="person" list="people-names" maxlength="200"></label><datalist id="people-names">${(await ctx.store.people.find({ ownerId: owner._id }).toArray()).map(p=>`<option value="${esc(p.name)}">`).join("")}</datalist><button>Create List</button><button type="button" onclick="this.closest('dialog').close()">Cancel</button></form></dialog><dialog id="add-to-list" aria-labelledby="add-to-list-title"><h2 id="add-to-list-title">Add to List</h2><form method="post" action="/assign/lists/add-selected"><label>List <select name="listId">${lists.map(l=>`<option value="${l._id}">${esc(l.name)}</option>`).join("")}</select></label><button>Add Tasks</button></form></dialog><script>document.addEventListener('submit',e=>{if(e.target.id==='create-list-form'||e.target.action.endsWith('/add-selected')){for(const old of e.target.querySelectorAll('input[data-picked]'))old.remove();for(const checked of document.querySelectorAll('#task-collection input[name=taskIds]:checked')){const h=document.createElement('input');h.type='hidden';h.name='taskIds';h.value=checked.value;h.dataset.picked='';e.target.append(h)}}});document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();document.querySelector('form[action=\"/assign/tasks\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()});</script>`;
+    return send(reply, "Tasks", `${create}${filter}<div class="tasks-layout">${sidebar}<div>${selected}<div class="task-toolbar"><h2>${tag ? `Tasks tagged “${esc(tag)}”` : "All Tasks"} (${tasks.length})</h2>${viewToggle}</div>${items}</div></div>${taskViewScript}`, { live: "/assign/events", current: "/assign/tasks" });
   });
   app.post("/assign/tasks", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const form = parseForm(request.body), title = field(form, "title"), instruction = field(form, "instruction"), tags = tagsFrom(form);
-    if (!title || !textLimit(title, 200) || !textLimit(instruction, 2000) || tags.length > 5 || tags.some(x => x.length > 30)) return fail(reply, 400, "Invalid Task fields.");
-    const at = ctx.now(); const result = await ctx.store.tasks.insertOne({ ownerId: owner._id, title, instruction, tags, note: "", blockedReason: "", status: "open", createdAt: at, updatedAt: at });
+    if (!title || !textLimit(title, 200) || !textLimit(instruction, 2000) || tags.length > 5 || tags.some(x => x.length > 30)) return addTaskFailure(reply, form, "Invalid Task fields.");
+    const deadline = deadlineFrom(form); if (deadline === "invalid") return addTaskFailure(reply, form, "Invalid Deadline.");
+    const at = ctx.now(); const result = await ctx.store.tasks.insertOne({ ownerId: owner._id, title, instruction, tags, note: "", status: "open", ...(deadline ? { deadline } : {}), createdAt: at, updatedAt: at });
     await recordEvent(ctx, owner._id, "task.create", { taskId: result.insertedId, toValue: title });
     return redirect(reply, "/assign/tasks");
   });
@@ -107,24 +172,25 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
     const list = task.listId ? await ctx.store.lists.findOne({ _id: task.listId, ownerId: owner._id }) : null;
-    const summary = `<p>${badge(task.status)}${task.blockedReason ? ` ${esc(task.blockedReason)}` : ""}${list ? ` · In <a href="/assign/lists/${list._id}">${esc(list.name)}</a>` : " · Not in a List yet"}</p>`;
-    const details = `<section><h2>Details</h2><form method="post" action="/assign/tasks/${task._id}/edit"><div class="field"><label for="edit-title">Title</label><input id="edit-title" name="title" maxlength="200" value="${esc(task.title)}" required></div><div class="field"><label for="edit-tags">Tags</label><small class="hint" id="edit-tags-hint">Up to 5, separated by commas.</small><input id="edit-tags" name="tags" value="${esc(task.tags.join(", "))}" aria-describedby="edit-tags-hint"></div><div class="field"><label for="edit-instruction">Instructions</label><textarea id="edit-instruction" name="instruction" maxlength="2000">${esc(task.instruction)}</textarea></div><button>Save details</button></form></section>`;
-    const body = `<a class="back" href="/assign/tasks">← All Tasks</a>${summary}${details}<section><h2>Status</h2>${statusForm(`/assign/tasks/${task._id}/status`, task)}</section><section><h2>Note</h2>${noteForm(`/assign/tasks/${task._id}/note`, task, "The assignee sees this note and can edit it.")}</section><p><a href="/assign/tasks/${task._id}/delete">Delete this Task…</a></p>`;
+    const summary = `<p>${badge(task.status)}${task.note ? ` ${esc(task.note)}` : ""}${list ? ` · In <a href="/assign/lists/${list._id}">${esc(list.name)}</a>` : " · Not in a List yet"}</p>`;
+    const details = `<section><h2>Details</h2><form method="post" action="/assign/tasks/${task._id}/edit"><div class="field"><label for="edit-title">Title</label><input id="edit-title" name="title" maxlength="200" value="${esc(task.title)}" required></div><div class="field"><label for="edit-tags">Tags</label><small class="hint" id="edit-tags-hint">Up to 5, separated by commas.</small><input id="edit-tags" name="tags" value="${esc(task.tags.join(", "))}" aria-describedby="edit-tags-hint"></div><div class="field"><label for="edit-instruction">Instructions</label><textarea id="edit-instruction" name="instruction" maxlength="2000">${esc(task.instruction)}</textarea></div><div class="field"><label for="edit-deadline">Deadline</label><input id="edit-deadline" type="date" name="deadlineDate" data-deadline="${task.deadline?.toISOString() || ""}"><input type="time" name="deadlineTime" ></div><input type="hidden" name="timezoneOffset"><button>Save details</button></form><script>document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();const d=document.querySelector('[data-deadline]');if(d.dataset.deadline){const t=new Date(d.dataset.deadline),local=new Date(t.getTime()-t.getTimezoneOffset()*60000).toISOString();d.value=local.slice(0,10);document.querySelector('input[name=deadlineTime]').value=local.slice(11,16)}document.querySelector('form[action$=\"/edit\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()})</script></section>`;
+    const body = `<a class="back" href="/assign/tasks">← All Tasks</a>${summary}${deadlineTag(task,ctx.now())}<details><summary>Details</summary>${details}</details><section><h2>Status</h2>${statusForm(`/assign/tasks/${task._id}/status`, task)}</section><section><h2>Note</h2>${noteForm(`/assign/tasks/${task._id}/note`, task, "The assignee sees this note and can edit it.")}</section><p><a href="/assign/tasks/${task._id}/delete">Delete this Task…</a></p>`;
     return send(reply, task.title, body, { live: "/assign/events", current: "/assign/tasks" });
   });
   app.post("/assign/tasks/:id/edit", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
     const form = parseForm(request.body), title = field(form, "title"), instruction = field(form, "instruction"), tags = tagsFrom(form);
     if (!title || !textLimit(title, 200) || !textLimit(instruction, 2000) || tags.length > 5 || tags.some(x => x.length > 30)) return fail(reply, 400, "Invalid Task fields.");
-    await ctx.store.tasks.updateOne({ _id: task._id, ownerId: owner._id }, { $set: { title, instruction, tags, updatedAt: ctx.now() } });
+    const deadline = deadlineFrom(form); if (deadline === "invalid") return fail(reply, 400, "Invalid Deadline.");
+    await ctx.store.tasks.updateOne({ _id: task._id, ownerId: owner._id }, { $set: { title, instruction, tags, updatedAt: ctx.now() }, ...(deadline ? { $set: { title, instruction, tags, deadline, updatedAt: ctx.now() } } : { $unset: { deadline: "" } }) });
     await recordEvent(ctx, owner._id, "task.edit", { taskId: task._id, listId: task.listId, fromValue: JSON.stringify({ title: task.title, tags: task.tags, instruction: task.instruction }), toValue: JSON.stringify({ title, tags, instruction }) });
     return redirect(reply, `/assign/tasks/${task._id}`);
   });
   app.post("/assign/tasks/:id/status", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
-    const form = parseForm(request.body), status = field(form, "status"), reason = field(form, "reason");
+    const form = parseForm(request.body), status = field(form, "status"), note = field(form, "note");
     if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
-    const error = await statusChange(ctx, task, status as TaskStatus, reason); if (error) return fail(reply, 400, error);
+    const error = await statusChange(ctx, task, status as TaskStatus, note); if (error) return fail(reply, 400, error);
     return redirect(reply, `/assign/tasks/${task._id}`);
   });
   app.post("/assign/tasks/:id/note", async (request, reply) => {
@@ -155,6 +221,12 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
       await ctx.store.lists.deleteOne({ _id: list.insertedId, ownerId: owner._id });
       return fail(reply, 409, "A Task was added to another List. Try again.");
     }
+    const personName = field(form, "person");
+    if (personName) {
+      if (!textLimit(personName, 200)) { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 400, "Invalid Person name."); }
+      try { await assignList(ctx, owner._id, list.insertedId, personName); }
+      catch { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 500, "Could not assign List."); }
+    }
     await recordEvent(ctx, owner._id, "list.create", { listId: list.insertedId, toValue: name });
     return redirect(reply, `/assign/lists/${list.insertedId}`);
   });
@@ -165,8 +237,8 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const done = tasks.filter(t => t.status === "done").length;
     const shared = assignment ? `<p>Assigned to <strong>${esc(assignee?.name || "someone")}</strong> · ${assignment.lastViewedAt ? `Last opened ${timeTag(assignment.lastViewedAt)}` : "Not opened yet"}</p><div class="field"><label for="share-link">Link to send ${esc(assignee?.name || "them")}</label><div class="copy-row"><input id="share-link" readonly value="${esc(ctx.config.publicUrl)}/l/${assignment.code}"><button type="button" data-copy="share-link">Copy link</button></div><small class="hint" id="share-link-status" role="status"></small></div><form method="post" action="/assign/lists/${list._id}/revoke"><p class="hint">Revoking stops this link from working straight away. The Tasks stay in the List.</p><button class="danger">Revoke link</button></form>` : '<p class="hint">Not assigned yet. Assign it to get a link you can send.</p>';
     const assign = `<form method="post" action="/assign/lists/${list._id}/assign"><div class="field"><label for="person">${assignment ? "Reassign to" : "Assign to"}</label><small class="hint" id="person-hint">${assignment ? "Reassigning revokes the current link and makes a new one." : "Type a name. New names are added to People."}</small><input id="person" name="person" maxlength="200" list="people-names" autocomplete="off" aria-describedby="person-hint" required><datalist id="people-names">${people.map(p => `<option value="${esc(p.name)}">`).join("")}</datalist></div><button>${assignment ? "Reassign" : "Assign"}</button></form>`;
-    const rows = tasks.length ? tasks.map(t => `<article class="row"><span>${taskLink(t)}</span><form method="post" action="/assign/lists/${list._id}/remove"><input type="hidden" name="taskId" value="${t._id}"><button class="secondary" aria-label="Remove ${esc(t.title)} from this List">Remove</button></form></article>`).join("") : '<p class="empty">No Tasks in this List yet.</p>';
-    const add = free.length ? `<form method="post" action="/assign/lists/${list._id}/add"><div class="field"><label for="add-task">Add a Task</label><select id="add-task" name="taskId">${free.map(t => `<option value="${t._id}">${esc(t.title)}</option>`).join("")}</select></div><button>Add Task</button></form>` : '<p class="hint">Every Task is already in a List. <a href="/assign/tasks">Create a new Task</a> to add one here.</p>';
+    const rows = tasks.length ? tasks.map(t => `<article class="row"><span>${taskLink(t)}${additionalTag(t,list)}</span><form method="post" action="/assign/lists/${list._id}/remove"><input type="hidden" name="taskId" value="${t._id}"><button class="secondary" aria-label="Remove ${esc(t.title)} from this List">Remove</button></form></article>`).join("") : '<p class="empty">No Tasks in this List yet.</p>';
+    const add = free.length ? `<form method="post" action="/assign/lists/${list._id}/add"><fieldset><legend>Add Tasks</legend>${free.map(t=>`<label><input type="checkbox" name="taskIds" value="${t._id}">${esc(t.title)}</label>`).join("")}</fieldset><button>Add Tasks</button></form>` : '<p class="hint">Every Task is already in a List. <a href="/assign/tasks">Create a new Task</a> to add one here.</p>';
     const rename = `<form method="post" action="/assign/lists/${list._id}/edit"><div class="field"><label for="list-rename">List name</label><input id="list-rename" name="name" value="${esc(list.name)}" maxlength="200" required></div><button>Rename</button></form>`;
     const body = `<a class="back" href="/assign/lists">← All Lists</a><section><h2>Sharing</h2>${shared}${assign}</section><section><h2>Tasks <span class="muted">(${done} of ${tasks.length} done)</span></h2>${rows}${add}</section><section><h2>Rename</h2>${rename}</section><p><a href="/assign/lists/${list._id}/delete" data-dialog="delete-list" aria-haspopup="dialog">Delete this List…</a></p>${confirmDialog("delete-list", `Delete ${list.name}?`, deleteListMessage(assignment ? 1 : 0, tasks.length), `/assign/lists/${list._id}/delete`, "Delete List")}`;
     return send(reply, list.name, body, { live: "/assign/events", current: "/assign/lists" });
@@ -178,36 +250,32 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   app.post("/assign/lists/:id/add", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const taskId = parseId(field(parseForm(request.body), "taskId")); if (!taskId) return fail(reply, 400, "Invalid Task.");
-    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id }); if (!task) return fail(reply, 404, "Task not found.");
-    if (task.listId) { const other = await ctx.store.lists.findOne({ _id: task.listId, ownerId: owner._id }); return fail(reply, 400, `Task already in ${other?.name || "another List"}.`); }
-    const reserved = await ctx.store.lists.findOneAndUpdate({ _id: list._id, ownerId: owner._id, taskCount: { $lt: 50 } }, { $inc: { taskCount: 1 } });
-    if (!reserved) return fail(reply, 400, "A List holds at most 50 Tasks.");
-    const result = await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id, listId: { $exists: false } }, { $set: { listId: list._id } });
-    if (!result.modifiedCount) { await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $inc: { taskCount: -1 } }); return fail(reply, 409, "Task already assigned."); }
-    await recordEvent(ctx, owner._id, "list.add", { listId: list._id, taskId, fromValue: "unassigned", toValue: list.name }); return redirect(reply, `/assign/lists/${list._id}`);
+    const ids = [...new Set([...fields(parseForm(request.body), "taskIds"), ...fields(parseForm(request.body), "taskId")])].map(parseId);
+    if (ids.some(x => !x)) return fail(reply, 400, "Invalid Task.");
+    const error = await addTasks(ctx, owner._id, list, ids as ObjectId[]); if (error) return fail(reply, 400, error);
+    return redirect(reply, `/assign/lists/${list._id}`);
+  });
+  app.post("/assign/lists/add-selected", async (request, reply) => {
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return;
+    const form = parseForm(request.body), listId = parseId(field(form, "listId"));
+    const list = listId && await ctx.store.lists.findOne({ _id: listId, ownerId: owner._id }); if (!list) return fail(reply, 404, "List not found.");
+    const ids = [...new Set(fields(form, "taskIds"))].map(parseId); if (ids.some(x=>!x)) return fail(reply, 400, "Invalid Task.");
+    const error = await addTasks(ctx, owner._id, list, ids as ObjectId[]); if (error) return fail(reply, 400, error);
+    return redirect(reply, `/assign/lists/${list._id}`);
   });
   app.post("/assign/lists/:id/remove", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const taskId = parseId(field(parseForm(request.body), "taskId")); if (!taskId) return fail(reply, 400, "Invalid Task.");
-    const result = await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id, listId: list._id }, { $unset: { listId: "" } }); if (!result.modifiedCount) return fail(reply, 404, "Task not in List.");
-    await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $inc: { taskCount: -1 } });
-    await recordEvent(ctx, owner._id, "list.remove", { listId: list._id, taskId, fromValue: list.name, toValue: "unassigned" }); return redirect(reply, `/assign/lists/${list._id}`);
+    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id, listId: list._id }); if (!task) return fail(reply, 404, "Task not in List.");
+    await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id }, { $unset: { listId: "" } });
+    await removedTask(ctx, task);
+    return redirect(reply, `/assign/lists/${list._id}`);
   });
   app.post("/assign/lists/:id/assign", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const name = field(parseForm(request.body), "person"); if (!name || !textLimit(name, 200)) return fail(reply, 400, "Invalid Person name.");
-    let person = await ctx.store.people.findOne({ ownerId: owner._id, nameLower: name.toLowerCase() });
-    if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId: owner._id, name, nameLower: name.toLowerCase() }); person = await ctx.store.people.findOne({ _id: result.insertedId, ownerId: owner._id }); } catch { person = await ctx.store.people.findOne({ ownerId: owner._id, nameLower: name.toLowerCase() }); } }
-    if (!person) return fail(reply, 500, "Could not create Person.");
-    const previous = await ctx.store.assignments.findOne({ ownerId: owner._id, listId: list._id, active: true });
-    await ctx.store.assignments.updateMany({ ownerId: owner._id, listId: list._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
-    if (previous) await recordEvent(ctx, owner._id, "assignment.revoke", { listId: list._id, personId: previous.personId });
-    let code = ""; const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
-    await ctx.store.assignments.insertOne({ ownerId: owner._id, listId: list._id, personId: person._id, code, active: true, viewCount: 0 });
-    await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { status: "active" } });
-    await recordEvent(ctx, owner._id, "assignment.create", { listId: list._id, personId: person._id }); return redirect(reply, `/assign/lists/${list._id}`);
+    try { await assignList(ctx, owner._id, list._id, name); } catch { return fail(reply, 500, "Could not assign List."); }
+    return redirect(reply, `/assign/lists/${list._id}`);
   });
   app.post("/assign/lists/:id/revoke", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
@@ -219,24 +287,25 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const code = (request.params as Params).code;
     const assignment = await activeAssignment(ctx, code);
     reply.header("X-Robots-Tag", "noindex");
-    if (!assignment) return send(reply, "Link no longer available", "<p>This link has been revoked or replaced.</p><p class=\"hint\">If you still need these Tasks, ask the person who sent you the link for a new one.</p>", { assignee: true });
+    if (!assignment) return inactiveLink(ctx, code, reply);
     const [list, person, tasks] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId }), ctx.store.tasks.find({ ownerId: assignment.ownerId, listId: assignment.listId }).toArray()]);
-    if (!list || !person) return fail(reply, 404, "Link no longer available.");
-    const showTask = (t: TaskDoc & { _id: ObjectId }) => `<article><h3>${esc(t.title)}</h3><p>${badge(t.status)}${t.blockedReason ? ` ${esc(t.blockedReason)}` : ""}${t.tags.length ? ` <span class="muted">· ${t.tags.map(esc).join(", ")}</span>` : ""}</p>${t.instruction ? `<p class="instruction">${esc(t.instruction)}</p>` : ""}${statusForm(`/l/${code}/tasks/${t._id}/status`, t)}${noteForm(`/l/${code}/tasks/${t._id}/note`, t, "Leave a note for the person who assigned this.")}</article>`;
+    if (!list || !person) return inactiveLink(ctx, code, reply);
+    const showTask = (t: TaskDoc & { _id: ObjectId }) => taskDisclosure(t, `/l/${code}/tasks/${t._id}/status`, ctx.now(), list, false, `/l/${code}/tasks/${t._id}/note`);
     const done = tasks.filter(t => t.status === "done"), pending = tasks.filter(t => t.status !== "done");
     const todo = pending.length ? pending.map(showTask).join("") : `<p class="empty">${tasks.length ? "Everything here is done. Nice work!" : "There are no Tasks in this List yet."}</p>`;
-    const body = `<p class="muted">Assigned to ${esc(person.name)} · ${done.length} of ${tasks.length} done</p>${todo}${done.length ? `<details><summary>Done (${done.length})</summary>${done.map(showTask).join("")}</details>` : ""}<script>navigator.sendBeacon('/l/${code}/view',new Blob([], {type:'text/plain'}))</script>`;
+    const removed = (list.removedTasks || []).length ? `<section><h2>Removed</h2>${list.removedTasks!.map(r=>`<article><strong>${esc(r.title)}</strong> <span class="badge">Removed</span> ${timeTag(r.removedAt)}</article>`).join("")}</section>` : "";
+    const body = `<p class="muted">Assigned to ${esc(person.name)} · ${done.length} of ${tasks.length} done</p>${todo}${done.length ? `<details><summary>Done (${done.length})</summary>${done.map(showTask).join("")}</details>` : ""}${removed}<script>navigator.sendBeacon('/l/${code}/view',new Blob([], {type:'text/plain'}))</script>`;
     return send(reply, list.name, body, { live: `/l/${code}/events` });
   });
   for (const action of ["status", "note"] as const) app.post(`/l/:code/tasks/:id/${action}`, async (request, reply) => {
-    const { code, id } = request.params as Params; const assignment = await activeAssignment(ctx, code); if (!assignment) return fail(reply, 404, "Link no longer available.");
+    const { code, id } = request.params as Params; const assignment = await activeAssignment(ctx, code); if (!assignment) return inactiveLink(ctx, code, reply);
     const taskId = parseId(id); if (!taskId) return fail(reply, 404, "Task not found.");
     const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId }); if (!task) return fail(reply, 404, "Task not found.");
     const form = parseForm(request.body);
     if (action === "status") {
-      const status = field(form, "status"), reason = field(form, "reason"); if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
+      const status = field(form, "status"), note = field(form, "note"); if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
       const person = await ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId });
-      const error = await statusChange(ctx, task, status as TaskStatus, reason, person ? { name: person.name, personId: person._id } : undefined); if (error) return fail(reply, 400, error);
+      const error = await statusChange(ctx, task, status as TaskStatus, note, person ? { name: person.name, personId: person._id } : undefined); if (error) return fail(reply, 400, error);
     } else {
       const note = field(form, "note"); if (!textLimit(note, 2000)) return fail(reply, 400, "Note is too long.");
       await ctx.store.tasks.updateOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId }, { $set: { note, updatedAt: ctx.now() } });
@@ -245,7 +314,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     return redirect(reply, `/l/${code}`);
   });
   app.post("/l/:code/view", async (request, reply) => {
-    const assignment = await activeAssignment(ctx, (request.params as Params).code); if (!assignment) return fail(reply, 404, "Link no longer available.");
+    const assignment = await activeAssignment(ctx, (request.params as Params).code); if (!assignment) return inactiveLink(ctx, (request.params as Params).code, reply);
     const userAgent = String(request.headers["user-agent"] || "").slice(0, 500);
     const bot = /bot|crawler|preview|WhatsApp|facebookexternalhit|Slack|Discord|Twitter|LinkedIn/i.test(userAgent);
     const owner = await currentOwner(ctx, request);
@@ -271,7 +340,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const filtered = Boolean(query.person || query.tag || query.status);
     const sections = people.filter(p => !query.person || p._id.toHexString() === query.person).map(p => {
       const mine = assignments.filter(a => a.personId.equals(p._id) && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(a.listId) && shown(t))));
-      const cards = mine.map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); const visible = all.filter(shown); return `<article><a href="/assign/lists/${a.listId}">${esc(list?.name)}</a> · ${all.filter(t => t.status === "done").length} of ${all.length} done · ${a.lastViewedAt ? `Viewed ${timeTag(a.lastViewedAt)}` : "Not opened yet"}${visible.length ? `<ul class="task-lines">${visible.map(t => `<li><span class="${t.status}">${esc(t.title)}</span> ${badge(t.status)}${t.blockedReason ? ` ${esc(t.blockedReason)}` : ""}</li>`).join("")}</ul>` : ""}</article>`; }).join("");
+      const cards = mine.map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); const visible = all.filter(shown); return `<article><a href="/assign/lists/${a.listId}">${esc(list?.name)}</a> · ${all.filter(t => t.status === "done").length} of ${all.length} done · ${a.lastViewedAt ? `Viewed ${timeTag(a.lastViewedAt)}` : "Not opened yet"}${visible.length ? `<ul class="task-lines">${visible.map(t => `<li><span class="${t.status}">${esc(t.title)}</span> ${badge(t.status)}${t.note ? ` ${esc(t.note)}` : ""}</li>`).join("")}</ul>` : ""}</article>`; }).join("");
       return `<section><h2>${esc(p.name)}</h2>${cards || `<p class="empty">${filtered ? "Nothing matches these filters." : "No active Lists."}</p>`}</section>`;
     }).join("");
     const unassigned = query.person ? [] : tasks.filter(t => !t.listId && shown(t));
@@ -295,6 +364,8 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
       if (event.kind === "task.status") return `${task}: ${event.toValue}`;
       if (event.kind === "task.create") return `Created ${task}`;
       if (event.kind === "task.delete") return `Deleted ${task}`;
+      if (event.kind === "list.add") return `Added ${event.fromValue || task} to ${list}`;
+      if (event.kind === "list.remove") return `Removed ${event.fromValue || task} from ${list}`;
       return `${event.kind.replaceAll(".", " ")} ${task}`;
     };
     const items = events.map(e => `<article>${e.seq > owner.lastSeenEventId ? '<span class="badge new">New</span> ' : ""}${esc(describe(e))} <span class="muted">· ${timeTag(e.createdAt)}</span></article>`).join("");
@@ -314,7 +385,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.post("/assign/tasks/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
     await ctx.store.tasks.deleteOne({ _id: task._id, ownerId: owner._id });
-    if (task.listId) await ctx.store.lists.updateOne({ _id: task.listId, ownerId: owner._id }, { $inc: { taskCount: -1 } });
+    if (task.listId) await removedTask(ctx, task);
     await recordEvent(ctx, owner._id, "task.delete", { taskId: task._id, listId: task.listId, fromValue: task.title }); return redirect(reply, "/assign/tasks");
   });
   app.get("/assign/lists/:id/delete", async (request, reply) => {

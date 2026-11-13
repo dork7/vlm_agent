@@ -121,4 +121,23 @@ describe("Task assignment login", () => {
     }
     expect(unavailable.headers["x-robots-tag"]).toBe("noindex");
   });
+  it("opens the local workspace without a login when explicitly enabled", async () => {
+    const local = Fastify({ logger: false });
+    const localConfig = loadAssignConfig({ ASSIGN_NO_LOGIN: "true", PORT: "4000" })!;
+    await local.register(assignRoutes, { db: client.db(`local_${crypto.randomUUID()}`), config: localConfig, mailer: { send: async () => {} } });
+    await local.ready();
+    try {
+      const board = await local.inject("/assign");
+      expect(board.statusCode).toBe(200);
+      expect(board.body).toContain("Board");
+      expect(board.body).not.toContain('href="/assign/settings"');
+      expect((await local.inject("/assign/login")).headers.location).toBe("/assign");
+      const cookie = (board.headers["set-cookie"] as string[]).find(x => x.startsWith("ta_csrf="))!.split(";")[0]!;
+      const csrf = cookie.slice("ta_csrf=".length);
+      const created = await local.inject({ method: "POST", url: "/assign/tasks", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, payload: new URLSearchParams({ title: "No login needed", csrf }).toString() });
+      expect(created.statusCode).toBe(303);
+      expect((await local.inject("/assign/tasks")).body).toContain("No login needed");
+    } finally { await local.close(); }
+  });
+
 });

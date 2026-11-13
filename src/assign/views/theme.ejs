@@ -298,3 +298,14 @@
     });
   })();
 </script>
+<style>
+  .tasks-layout { display: grid; grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr); gap: 1rem; align-items: start; }
+  .list-sidebar { margin-top: 1rem; }
+  .task-heading { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem 1rem; }
+  .task-heading details { flex: 1 1 16rem; margin: 0; }
+  .task-heading .status-actions { flex: 0 1 auto; }
+  .deadline.overdue { color: var(--danger); font-weight: 700; }
+  dialog { max-width: min(38rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto; border: 1px solid var(--border); border-radius: .85rem; background: var(--surface-1); color: var(--text); padding: 1.4rem; }
+  dialog::backdrop { background: rgb(0 0 0 / 65%); }
+  @media (max-width: 48rem) { .tasks-layout { display: block; } .list-sidebar { margin-bottom: 1rem; } }
+</style>
