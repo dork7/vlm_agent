@@ -1,0 +1,23 @@
+<script>
+  (() => {
+    const collection = document.getElementById("task-collection");
+    const toggle = document.getElementById("task-view-toggle");
+    if (!collection || !toggle) return;
+    const key = "ta-task-view";
+    const buttons = toggle.querySelectorAll("button[data-task-view]");
+    const update = view => {
+      collection.dataset.view = view === "grid" ? "grid" : "list";
+      for (const button of buttons) {
+        button.setAttribute("aria-pressed", String(button.dataset.taskView === collection.dataset.view));
+      }
+    };
+    let saved;
+    try { saved = localStorage.getItem(key); } catch {}
+    update(saved);
+    for (const button of buttons) button.addEventListener("click", () => {
+      update(button.dataset.taskView);
+      try { localStorage.setItem(key, collection.dataset.view); } catch {}
+    });
+    toggle.hidden = false;
+  })();
+</script>
