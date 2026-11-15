@@ -60,6 +60,10 @@ _Avoid_: Notification, alert, ping
 The bot asking the person whether an unclear Voice Message is a Note, Task or Query.
 _Avoid_: Disambiguation, prompt, follow-up
 
+**Voice Assistant**:
+The AI a User talks with out loud on the dashboard's Voice page. A conversation, not a Channel: nothing said to it becomes a Note, Task or Query.
+_Avoid_: Voice agent (except for its worker process), voice bot, call
+
 ## Observability
 
 **Run**:

@@ -1,5 +1,5 @@
 <%- include("header", { title: "Users" }) %>
-<h1>Users</h1>
+<%- include("page-heading", { title: "Users", description: "Manage access to your workspace.", count: users.length, countLabel: "workspace users" }) %>
 <ul class="notes">
 <% for (const user of users) { %>
   <li>

@@ -8,7 +8,7 @@ export function buildServer(options: {
   inventory: InventoryApiOptions;
   /** Present in webhook mode: the route a Channel posts its updates to. */
   webhook?: { path: string; handler: RouteHandlerMethod };
-  /** The Users' web dashboard, behind its own login. */
+  /** The Users' web dashboard, opening as the first admin without a login. */
   dashboard?: DashboardOptions;
   assign?: AssignOptions;
 }): FastifyInstance {
