@@ -23,9 +23,11 @@ npm start            # start the app (Telegram long polling + Fastify)
 
 Startup fails with a message naming any missing required environment variable. With no Users in the database, it creates the first admin from `ADMIN_USERNAME`, `ADMIN_PASSWORD` and `ADMIN_TELEGRAM_ID` (your numeric Telegram user ID).
 
+The dashboard at http://127.0.0.1:3000/tasks opens without a login as the first admin (oldest User if there is no admin). Anyone who can reach the dashboard can use that User's pages and actions. Explicit HTTP Basic credentials still select another User; invalid credentials return an error without a browser login prompt.
+
 ## Voice page (optional)
 
-A logged-in User can talk with a voice assistant on the dashboard's **Voice** page. It runs on LiveKit and models on this machine: whisper.cpp hears, and an OpenAI-compatible server such as LocalAI thinks (`VOICE_LLM_MODEL`) and speaks (`VOICE_TTS_MODEL`). What is said there is not saved as Notes or Tasks (ADR 0006).
+A User can talk with a voice assistant on the dashboard's **Voice** page. It runs on LiveKit and models on this machine: whisper.cpp hears, and an OpenAI-compatible server such as LocalAI thinks (`VOICE_LLM_MODEL`) and speaks (`VOICE_TTS_MODEL`). What is said there is not saved as Notes or Tasks (ADR 0006).
 
 ```sh
 brew install livekit

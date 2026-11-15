@@ -6,6 +6,7 @@
   <button type="button" id="voice-start">Start talking</button>
   <button type="button" id="voice-mute" hidden aria-pressed="false">Mute microphone</button>
   <button type="button" id="voice-end" hidden>End</button>
+  <button type="button" id="voice-sound" hidden>Tap to hear the assistant</button>
 </div>
 <p id="voice-status" class="meta" role="status" aria-live="polite">Not connected.</p>
 
@@ -24,6 +25,7 @@
   const startButton = document.getElementById("voice-start");
   const muteButton = document.getElementById("voice-mute");
   const endButton = document.getElementById("voice-end");
+  const soundButton = document.getElementById("voice-sound");
   const statusLine = document.getElementById("voice-status");
   const transcript = document.getElementById("voice-transcript");
   const audio = document.getElementById("voice-audio");
@@ -49,7 +51,10 @@
     muteButton.hidden = !connected;
     endButton.hidden = !connected;
     askForm.hidden = !connected;
+    showSoundBlocked();
   };
+  /** Browsers may refuse to play sound the page didn't start during a tap; then a tap on this button starts it. */
+  const showSoundBlocked = () => { soundButton.hidden = !room || room.canPlaybackAudio; };
 
   /** One line of the conversation per transcription segment, filled in as its text streams in. */
   const lines = new Map();
@@ -78,13 +83,17 @@
   async function start() {
     startButton.disabled = true;
     setStatus("Connecting…");
+    // Unlock sound now, while the browser still counts this as the User's tap (mobile Chrome and Safari
+    // block sound started later, e.g. after connecting).
+    room = new Room({ adaptiveStream: true, dynacast: true });
+    room.startAudio().catch(() => {});
     try {
       const response = await fetch("/voice/token", { method: "POST", credentials: "same-origin" });
       if (!response.ok) throw new Error(`The server refused a voice session (${response.status}).`);
       const { url, token } = await response.json();
 
-      room = new Room({ adaptiveStream: true, dynacast: true });
       room
+        .on(RoomEvent.AudioPlaybackStatusChanged, showSoundBlocked)
         .on(RoomEvent.TrackSubscribed, (track) => {
           if (track.kind === Track.Kind.Audio) audio.append(track.attach());
         })
@@ -119,7 +128,7 @@
       });
 
       await room.connect(url, token);
-      await room.startAudio();
+      await room.startAudio().catch(() => {}); // if refused, the "Tap to hear" button appears
       await room.localParticipant.setMicrophoneEnabled(true);
       micMuted = false;
       muteButton.textContent = "Mute microphone";
@@ -157,6 +166,10 @@
 
   startButton.addEventListener("click", start);
   endButton.addEventListener("click", () => room?.disconnect());
+  soundButton.addEventListener("click", async () => {
+    await room?.startAudio().catch(() => {});
+    showSoundBlocked();
+  });
   muteButton.addEventListener("click", async () => {
     if (!room) return;
     micMuted = !micMuted;

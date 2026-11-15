@@ -1,12 +1,17 @@
 <%- include("header", { title: "Notes" }) %>
-<h1>Notes</h1>
+<%- include("page-heading", { title: "Notes", description: "Your thoughts, saved and ready to find.", count: notes.length, countLabel: search ? "search results" : "saved notes" }) %>
 <form method="get" action="/notes" role="search">
-  <input type="search" name="q" value="<%= search %>" placeholder="Search Headings and text" aria-label="Search Notes">
+  <input type="search" name="q" value="<%= search %>" placeholder="Search headings and text" aria-label="Search Notes">
   <button type="submit">Search</button>
   <% if (search) { %><a href="/notes">Clear</a><% } %>
 </form>
 <% if (notes.length === 0) { %>
-  <p><%= search ? "No Notes match your search." : "No Notes yet." %></p>
+  <%- include("empty-state", {
+    message: search ? "No Notes match your search." : "No Notes yet.",
+    hint: search ? "Try another word or clear your search." : "Send the bot a thought you want to keep.",
+    href: search ? "/notes" : "/tasks",
+    action: search ? "Clear search" : "View your tasks"
+  }) %>
 <% } else { %>
   <ul class="notes">
   <% for (const note of notes) { %>

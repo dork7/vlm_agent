@@ -45,16 +45,23 @@ describe("dashboard Voice page", () => {
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain("<h1>Voice</h1>");
     expect(page.body).toContain('<script src="/voice/livekit-client.js"></script>');
-    expect(page.body).toContain('<a href="/voice">Voice</a>');
+    expect(page.body).toContain('<a href="/voice" aria-current="page">Voice</a>');
+    // Phones block sound a page starts outside a tap; this button lets the User start it.
+    expect(page.body).toContain('id="voice-sound"');
 
     const tasks = await withVoice.inject({ method: "GET", url: "/tasks", headers: as });
     expect(tasks.body).toContain('<a href="/voice">Voice</a>');
   });
 
-  it("asks for credentials before the page or a token", async () => {
+  it("opens the page, client and a voice session without credentials", async () => {
     for (const [method, url] of [["GET", "/voice"], ["POST", "/voice/token"], ["GET", "/voice/livekit-client.js"]] as const) {
       const response = await withVoice.inject({ method, url });
-      expect(response.statusCode, `${method} ${url}`).toBe(401);
+      expect(response.statusCode, `${method} ${url}`).toBe(200);
+      expect(response.headers["www-authenticate"]).toBeUndefined();
+      if (url === "/voice/token") {
+        const claims = await new TokenVerifier(LIVEKIT.apiKey, LIVEKIT.apiSecret).verify(response.json().token);
+        expect(claims.sub).toBe(`user-${aliceId.toHexString()}`);
+      }
     }
   });
 

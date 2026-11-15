@@ -31,7 +31,7 @@ declare module "fastify" {
   }
 }
 
-/** The server-rendered dashboard, behind HTTP basic auth checked against Users. */
+/** The server-rendered dashboard opens as the first admin; explicit credentials can select another User. */
 export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app, options) => {
   const { database, defaultTimezone, markdownDir, now = () => new Date() } = options;
   const timezoneOf = (user: UserDoc) => user.timezone ?? defaultTimezone;
@@ -58,13 +58,15 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    const user = await authenticate(database, request.headers.authorization);
+    const header = request.headers.authorization;
+    const user = header === undefined
+      ? await database.users.findOne({}, { sort: { isAdmin: -1, createdAt: 1, _id: 1 } })
+      : await authenticate(database, header);
     if (!user) {
       return reply
-        .code(401)
-        .header("www-authenticate", 'Basic realm="Voice Notes Bot", charset="UTF-8"')
+        .code(header === undefined ? 503 : 401)
         .type("text/plain")
-        .send("Log in with your username and password.");
+        .send(header === undefined ? "No dashboard User is configured yet." : "Invalid user credentials.");
     }
     request.user = user;
   });
@@ -186,7 +188,7 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     return reply.redirect("/notes", 303);
   });
 
-  // Child plugins, so they share this login but add their own admin-only check.
+  // Child plugins share the current User; Users and Runs add their own admin-only check.
   await app.register(usersPortalRoutes, { database, defaultTimezone });
   await app.register(runRoutes, { database, timezoneOf });
   if (options.voice) await app.register(voiceRoutes, { livekit: options.voice });

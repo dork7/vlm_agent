@@ -11,7 +11,7 @@ import { render } from "./http.ts";
  */
 const LIVEKIT_CLIENT = createRequire(import.meta.url).resolve("livekit-client");
 
-/** The Voice page, where a logged-in User talks to the voice agent through LiveKit. */
+/** The Voice page, where the current User talks to the voice agent through LiveKit. */
 export const voiceRoutes: FastifyPluginAsync<{ livekit: LiveKitConfig }> = async (app, { livekit }) => {
   let client: Buffer | undefined;
 

@@ -51,6 +51,7 @@ export function badRequest(reply: FastifyReply, message: string) {
  */
 export async function render(reply: FastifyReply, view: string, data: Record<string, unknown>) {
   const html = await ejs.renderFile(`${VIEWS}${view}.ejs`, {
+    activeSection: ({ task: "tasks", note: "notes", user: "users", run: "runs", "run-totals": "runs" } as Record<string, string>)[view] ?? view,
     viewer: reply.request.user,
     voicePage: reply.server.voicePage === true,
     ...data,
