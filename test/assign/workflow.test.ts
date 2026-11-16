@@ -456,6 +456,69 @@ describe("Task assignment workflow", () => {
     expect(invalid.statusCode).toBe(400); expect(invalid.body).toContain("data-reopen"); expect(invalid.body).toContain("Bad");
   });
 
+  describe("Add Task dialog and Deadline", () => {
+    async function dueTask(deadline = { deadlineDate: "2020-01-02", deadlineTime: "09:30", timezoneOffset: "-240" }) {
+      const owner = browser(); await owner.login(`due-${crypto.randomUUID()}@example.com`);
+      await owner.post("/assign/tasks", { title: "Due", ...deadline });
+      const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Due" }))!;
+      await owner.post("/assign/lists", { name: "L", taskIds: task._id.toHexString() });
+      const list = (await store.lists.findOne({ name: "L" }))!;
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
+      const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+      return { owner, store, task, link: `/l/${assignment.code}` };
+    }
+    it("offers Add Task as a button opening a dialog with Title, Tags, Instructions and Deadline", async () => {
+      const owner = browser(); await owner.login("dialog@example.com");
+      const body = (await owner.get("/assign/tasks")).body;
+      expect(body).toMatch(/<button[^>]*data-dialog="add-task"[^>]*>Add Task<\/button>/);
+      const dialog = body.match(/<dialog id="add-task"[\s\S]*?<\/dialog>/)![0];
+      for (const name of ["title", "tags", "instruction", "deadlineDate", "deadlineTime"]) expect(dialog).toContain(`name="${name}"`);
+      expect(dialog).toContain('maxlength="200"'); expect(dialog).toContain('maxlength="2000"');
+    });
+    it("keeps an explicit time as the Owner's local time and rejects unparseable Deadlines", async () => {
+      const owner = browser(); await owner.login("explicit@example.com");
+      await owner.post("/assign/tasks", { title: "Timed", deadlineDate: "2099-03-04", deadlineTime: "09:30", timezoneOffset: "-120" });
+      const store = await openAssignStore(db);
+      expect((await store.tasks.findOne({ title: "Timed" }))!.deadline!.toISOString()).toBe("2099-03-04T07:30:00.000Z");
+      for (const bad of <Record<string, string>[]>[{ deadlineDate: "tomorrow" }, { deadlineDate: "2099-02-30" }, { deadlineTime: "10:00" }, { deadlineDate: "2099-01-01", timezoneOffset: "abc" }]) {
+        const res = await owner.post("/assign/tasks", { title: "Nope", ...bad });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(await store.tasks.countDocuments({ title: "Nope" })).toBe(0);
+    });
+    it("reopens the dialog with the entered input and the error", async () => {
+      const owner = browser(); await owner.login("reopen@example.com");
+      const res = await owner.post("/assign/tasks", { title: "Keep me", tags: "a, b", instruction: "Do it", deadlineDate: "2099-02-30" });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toContain("data-reopen"); expect(res.body).toContain("Invalid Deadline");
+      for (const kept of ['value="Keep me"', 'value="a, b"', ">Do it</textarea>", 'value="2099-02-30"']) expect(res.body).toContain(kept);
+    });
+    it("shows the Deadline as one instant to Assignee and Owner, Overdue only while not Done", async () => {
+      const { owner, task, link } = await dueTask();
+      expect((await app.inject({ method: "GET", url: link })).body).toContain('datetime="2020-01-02T05:30:00.000Z"');
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(body).toContain("Overdue");
+      await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(body).not.toContain("Overdue");
+    });
+    it("lets the Owner change and clear a Deadline but not the Assignee", async () => {
+      const { owner, store, task, link } = await dueTask();
+      const base = { title: "Due", tags: "", instruction: "" };
+      expect((await owner.post(`/assign/tasks/${task._id}/edit`, { ...base, deadlineDate: "2099-05-06", deadlineTime: "08:00", timezoneOffset: "0" })).statusCode).toBe(303);
+      expect((await store.tasks.findOne({ _id: task._id }))!.deadline!.toISOString()).toBe("2099-05-06T08:00:00.000Z");
+      expect((await owner.post(`/assign/tasks/${task._id}/edit`, { ...base, deadlineDate: "nope" })).statusCode).toBe(400);
+      expect((await store.tasks.findOne({ _id: task._id }))!.deadline!.toISOString()).toBe("2099-05-06T08:00:00.000Z");
+      const post = (path: string, payload: Record<string, string>) => app.inject({ method: "POST", url: `${link}${path}`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: new URLSearchParams(payload).toString() });
+      await post(`/tasks/${task._id}/status`, { status: "blocked", deadlineDate: "2001-01-01" });
+      await post(`/tasks/${task._id}/note`, { note: "hi", deadline: "2001-01-01", deadlineDate: "2001-01-01" });
+      for (const path of [`/tasks/${task._id}/edit`, `/tasks/${task._id}/deadline`]) expect((await post(path, { title: "X", deadlineDate: "2001-01-01" })).statusCode).toBeGreaterThanOrEqual(400);
+      const after = (await store.tasks.findOne({ _id: task._id }))!;
+      expect(after.deadline!.toISOString()).toBe("2099-05-06T08:00:00.000Z"); expect(after.title).toBe("Due");
+      expect((await app.inject({ method: "GET", url: link })).body).not.toMatch(/name="deadline/);
+      await owner.post(`/assign/tasks/${task._id}/edit`, base);
+      expect((await store.tasks.findOne({ _id: task._id }))!.deadline).toBeUndefined();
+    });
+  });
+
   it("sends added and removed Task notices only after assignment", async () => {
     const owner = browser(); await owner.login("notices@example.com");
     for (const title of ["Base", "Extra"]) await owner.post("/assign/tasks", { title });
