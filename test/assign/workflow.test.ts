@@ -297,6 +297,21 @@ describe("Task assignment workflow", () => {
     expect((await owner.post(`/assign/tasks/${task._id}/status`, { status: "blocked" })).statusCode).toBe(303);
     expect((await store.tasks.findOne({ _id: task._id }))!.status).toBe("blocked");
   });
+  it("lets an Assignee block without a Note and shows the Note wherever the reason appeared", async () => {
+    const owner = browser(); await owner.login("blocknote@example.com");
+    await owner.post("/assign/tasks", { title: "Stuck" }); await owner.post("/assign/tasks", { title: "Jammed" });
+    const store = await openAssignStore(db), stuck = (await store.tasks.findOne({ title: "Stuck" }))!, jammed = (await store.tasks.findOne({ title: "Jammed" }))!;
+    await owner.post("/assign/lists", { name: "Jobs", taskIds: [stuck._id.toHexString(), jammed._id.toHexString()], person: "Lena" });
+    const assignment = (await store.assignments.findOne({ active: true }))!;
+    const link = `/l/${assignment.code}`, form = { "content-type": "application/x-www-form-urlencoded" };
+    expect((await app.inject({ method: "POST", url: `${link}/tasks/${stuck._id}/status`, headers: form, payload: "status=blocked" })).statusCode).toBe(303);
+    expect((await store.tasks.findOne({ _id: stuck._id }))!.status).toBe("blocked");
+    await app.inject({ method: "POST", url: `${link}/tasks/${jammed._id}/status`, headers: form, payload: "status=blocked&note=Waiting+for+keys" });
+    expect((await app.inject({ method: "GET", url: link })).body).toContain("Waiting for keys");
+    expect((await owner.get("/assign")).body).toContain("Waiting for keys");
+    expect((await owner.get(`/assign/tasks/${jammed._id}`)).body).toContain("Waiting for keys");
+    expect(await store.tasks.countDocuments({ blockedReason: { $exists: true } })).toBe(0);
+  });
   it("creates and assigns selected Tasks, then tags additions and shows removals", async () => {
     const owner = browser(); await owner.login("selected@example.com");
     for (const title of ["Initial", "Later"]) await owner.post("/assign/tasks", { title });
