@@ -344,6 +344,41 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/revoke`);
     expect((await app.inject({ method: "GET", url: `/l/${second.code}` })).body).toContain("This List has been revoked");
   });
+  it("shows the revoked message, with no Task details, on every inactive-link action and after List or Person deletion", async () => {
+    const owner = browser(); await owner.login("inactive@example.com");
+    await owner.post("/assign/tasks", { title: "Secret errand" }); await owner.post("/assign/tasks", { title: "Other errand" });
+    const store = await openAssignStore(db);
+    const form = { "content-type": "application/x-www-form-urlencoded" };
+    const revoked = "This List has been revoked. Ask the person who sent it for a new link.";
+    for (const [i, how] of ["revoke", "deleteList", "deletePerson"].entries()) {
+      await owner.post("/assign/lists", { name: `Hidden${i}` });
+      const list = (await store.lists.findOne({ name: `Hidden${i}` }))!, task = (await store.tasks.findOne({ title: "Secret errand" }))!;
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: task._id.toHexString() });
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: `Pat${i}` });
+      const link = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+      if (how === "revoke") await owner.post(`/assign/lists/${list._id}/revoke`);
+      else if (how === "deleteList") await owner.post(`/assign/lists/${list._id}/delete`);
+      else await owner.post(`/assign/people/${link.personId}/delete`);
+      const page = await app.inject({ method: "GET", url: `/l/${link.code}` });
+      expect(page.body).toContain(revoked); expect(page.body).not.toContain("Secret errand"); expect(page.body).not.toContain("replaced");
+      for (const action of [`tasks/${task._id}/status`, `tasks/${task._id}/note`, "view"]) {
+        const res = await app.inject({ method: "POST", url: `/l/${link.code}/${action}`, headers: form, payload: "status=done&note=x" });
+        expect(res.statusCode).toBe(200); expect(res.body).toContain(revoked); expect(res.body).not.toContain("Secret errand");
+      }
+      expect((await store.tasks.findOne({ _id: task._id }))!.status).not.toBe("done");
+    }
+  });
+  it("calls a revoked link revoked even after the List is assigned again", async () => {
+    const owner = browser(); await owner.login("again@example.com");
+    await owner.post("/assign/lists", { name: "Again" });
+    const store = await openAssignStore(db), list = (await store.lists.findOne({ name: "Again" }))!;
+    await owner.post(`/assign/lists/${list._id}/assign`, { person: "A" });
+    const first = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+    await owner.post(`/assign/lists/${list._id}/revoke`);
+    await owner.post(`/assign/lists/${list._id}/assign`, { person: "B" });
+    const body = (await app.inject({ method: "GET", url: `/l/${first.code}` })).body;
+    expect(body).toContain("This List has been revoked"); expect(body).not.toContain("replaced");
+  });
   it("stores an Owner-local date-only Deadline and marks only unfinished work overdue", async () => {
     const owner = browser(); await owner.login("deadlines@example.com");
     expect((await owner.post("/assign/tasks", { title: "Due", deadlineDate: "2020-01-02", timezoneOffset: "-240" })).statusCode).toBe(303);
