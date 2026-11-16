@@ -19,6 +19,11 @@ describe("Task assignment configuration and mail delivery", () => {
     expect(() => loadAssignConfig({ ...env, RESEND_API_KEY: "re_test" })).toThrow(/MAIL_FROM/);
     expect(() => loadAssignConfig({ ...env, PUBLIC_URL: "javascript:bad" })).toThrow(AssignConfigError);
   });
+  it("limits the no-login mode to loopback", () => {
+    expect(loadAssignConfig({ ASSIGN_NO_LOGIN: "true", PORT: "4000" })?.publicUrl).toBe("http://127.0.0.1:4000");
+    expect(() => loadAssignConfig({ ASSIGN_NO_LOGIN: "true", PUBLIC_URL: "https://tasks.example" })).toThrow(/local-only/);
+    expect(() => loadAssignConfig({ ASSIGN_NO_LOGIN: "true", HOST: "0.0.0.0" })).toThrow(/local-only/);
+  });
   it("passes the link to Resend and prints it in console mode", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
     const message = { to: "owner@example.com", subject: "Log in", text: "http://tasks.example/assign/auth?token=secret" };
