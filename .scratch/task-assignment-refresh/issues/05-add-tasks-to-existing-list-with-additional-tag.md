@@ -4,7 +4,7 @@
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Both entry points add Tasks and enforce the one-List rule.
 - [ ] Tag appears only for Tasks added after first assignment and persists through Done, revoke and reassign.

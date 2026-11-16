@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Inline add form is replaced by the dialog with the same fields and limits.
 - [ ] Date-only becomes end of day; unparseable input is rejected.

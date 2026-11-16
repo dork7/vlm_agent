@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Revoke and reassign produce different messages.
 - [ ] No Task details appear on an inactive link.

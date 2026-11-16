@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Create-and-assign is all or nothing; a failure leaves no List or Assignment behind.
 - [ ] Tasks already in a List can't be selected, and the server rejects them anyway.
