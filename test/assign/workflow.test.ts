@@ -726,4 +726,90 @@ describe("Task assignment workflow", () => {
     });
   });
 
+  describe("Removed Task rows", () => {
+    async function removedSetup(email: string, titles: string[]) {
+      const owner = browser(); await owner.login(email);
+      for (const title of titles) await owner.post("/assign/tasks", { title });
+      const store = await openAssignStore(db);
+      const task = async (title: string) => (await store.tasks.findOne({ title }))!;
+      const id = async (title: string) => (await task(title))._id.toHexString();
+      return { owner, store, task, id };
+    }
+    const page = async (code: string) => (await app.inject({ method: "GET", url: `/l/${code}` })).body;
+    const removedSection = (html: string) => html.match(/<h2>Removed<\/h2>[^]*?<\/section>/)?.[0] || "";
+
+    it("shows a deleted Task by its title as Removed, with no buttons or Note", async () => {
+      const { owner, store, id } = await removedSetup("rm-delete@example.com", ["Keep", "Doomed"]);
+      await owner.post("/assign/lists", { name: "Gone", taskIds: [await id("Keep"), await id("Doomed")], person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Gone" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      await owner.post(`/assign/tasks/${await id("Doomed")}/delete`);
+      const section = removedSection(await page(code));
+      expect(section).toContain("Doomed"); expect(section).toContain("Removed"); expect(section).toMatch(/<time/);
+      expect(section).not.toMatch(/<button|<form|<textarea|<input/);
+    });
+
+    it("shows both Done and not-Done removals but nothing for a Draft List", async () => {
+      const { owner, store, id } = await removedSetup("rm-done@example.com", ["Stay", "Finished", "Open", "DraftOne"]);
+      await owner.post("/assign/lists", { name: "Live", taskIds: [await id("Stay"), await id("Finished"), await id("Open")], person: "Sam" });
+      const live = (await store.lists.findOne({ name: "Live" }))!, code = (await store.assignments.findOne({ listId: live._id, active: true }))!.code;
+      await owner.post(`/assign/tasks/${await id("Finished")}/status`, { status: "done" });
+      await owner.post(`/assign/lists/${live._id}/remove`, { taskId: await id("Finished") });
+      await owner.post(`/assign/lists/${live._id}/remove`, { taskId: await id("Open") });
+      const section = removedSection(await page(code));
+      expect(section).toContain("Finished"); expect(section).toContain("Open");
+      await owner.post("/assign/lists", { name: "Sketch", taskIds: await id("DraftOne") });
+      const draft = (await store.lists.findOne({ name: "Sketch" }))!;
+      await owner.post(`/assign/lists/${draft._id}/remove`, { taskId: await id("DraftOne") });
+      await owner.post("/assign/tasks", { title: "DraftTwo" });
+      await owner.post(`/assign/lists/${draft._id}/add`, { taskId: await id("DraftTwo") });
+      await owner.post(`/assign/tasks/${await id("DraftTwo")}/delete`);
+      await owner.post(`/assign/lists/${draft._id}/assign`, { person: "Tia" });
+      const draftCode = (await store.assignments.findOne({ listId: draft._id, active: true }))!.code;
+      expect(await page(draftCode)).not.toContain("Removed");
+    });
+
+    it("clears the Removed row on re-add and tags the Task Additional", async () => {
+      const { owner, store, id } = await removedSetup("rm-readd@example.com", ["Base", "Back"]);
+      await owner.post("/assign/lists", { name: "Readd", taskIds: [await id("Base"), await id("Back")], person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Readd" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Back") });
+      expect(removedSection(await page(code))).toContain("Back");
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("Back") });
+      const html = await page(code);
+      expect(html).not.toContain("<h2>Removed</h2>");
+      expect(html).toMatch(/Back[^]*?Additional task/);
+    });
+
+    it("excludes Removed rows from progress and completes an all-Done remainder", async () => {
+      const { owner, store, id } = await removedSetup("rm-progress@example.com", ["One", "Two", "Three"]);
+      await owner.post("/assign/lists", { name: "Prog", taskIds: [await id("One"), await id("Two"), await id("Three")], person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Prog" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      await owner.post(`/assign/tasks/${await id("One")}/status`, { status: "done" });
+      await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Three") });
+      await owner.post(`/assign/tasks/${await id("Two")}/delete`);
+      expect(await page(code)).toContain("1 of 1 done");
+      expect((await owner.get("/assign")).body).toContain("1 of 1 done");
+      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("1 of 1 done");
+      expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeTruthy();
+      expect(removedSection(await page(code))).toMatch(/Two[^]*Three|Three[^]*Two/);
+    });
+
+    it("tells the open page and the Board feed when a Task is removed or deleted", async () => {
+      const { owner, store, id } = await removedSetup("rm-live@example.com", ["Base", "Out", "Zap"]);
+      await owner.post("/assign/lists", { name: "Feed", taskIds: [await id("Base"), await id("Out"), await id("Zap")], person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Feed" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      const address = await app.listen({ host: "127.0.0.1", port: 0 }), controller = new AbortController();
+      try {
+        const reader = (await fetch(`${address}/l/${code}/events`, { signal: controller.signal })).body!.getReader();
+        const read = async (needle: string) => { let text = ""; for (let j = 0; j < 4 && !text.includes(needle); j++) text += new TextDecoder().decode((await reader.read()).value); return text; };
+        await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Out") });
+        expect(await read("Task removed: Out")).toContain("Task removed: Out");
+        await owner.post(`/assign/tasks/${await id("Zap")}/delete`);
+        expect(await read("Task removed: Zap")).toContain("Task removed: Zap");
+        const feed = (await owner.get("/assign/feed")).body;
+        expect(feed).toContain("Removed Out from Feed"); expect(feed).toContain("Removed Zap from Feed");
+      } finally { controller.abort(); }
+    });
+  });
+
 });
