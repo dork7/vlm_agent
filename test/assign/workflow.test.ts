@@ -11,11 +11,11 @@ import { purgeOld } from "../../src/assign/housekeeping.ts";
 import { createRateLimiter } from "../../src/assign/rate-limit.ts";
 
 describe("Task assignment workflow", () => {
-  let mongo: MongoMemoryServer, client: MongoClient, db: Db, app: ReturnType<typeof Fastify>;
+  let mongo: MongoMemoryServer, client: MongoClient, db: Db, app: ReturnType<typeof Fastify>, serverAddress: string | undefined;
   const mail: string[] = [];
   beforeAll(async () => { mongo = await MongoMemoryServer.create(); client = await MongoClient.connect(mongo.getUri()); });
   beforeEach(async () => {
-    mail.length = 0; db = client.db(`workflow_${crypto.randomUUID()}`); app = Fastify({ logger: false });
+    mail.length = 0; serverAddress = undefined; db = client.db(`workflow_${crypto.randomUUID()}`); app = Fastify({ logger: false });
     await app.register(assignRoutes, { db, config: loadAssignConfig({ PUBLIC_URL: "http://assign.test", ASSIGN_JWT_SECRET: "x".repeat(32) })!, mailer: { send: async (m: Mail) => { mail.push(m.text); } } });
     await app.ready();
   });
@@ -38,6 +38,37 @@ describe("Task assignment workflow", () => {
       async login(email: string) { await this.get("/assign/login"); await this.post("/assign/login", { email }); const token = new URL(mail.at(-1)!.match(/http:\/\/\S+/)![0]!).searchParams.get("token")!; await this.post("/assign/auth", { token }); await this.get("/assign/password-offer"); await this.post("/assign/password-offer"); },
     };
   }
+  const FORM_HEADERS = { "content-type": "application/x-www-form-urlencoded" };
+  // Assignee-style form POST (no Owner session or CSRF), by payload object or raw string.
+  const postForm = (url: string, payload: Record<string, string> | string = {}) => app.inject({ method: "POST", url, headers: FORM_HEADERS, payload: typeof payload === "string" ? payload : new URLSearchParams(payload).toString() });
+  type Store = Awaited<ReturnType<typeof openAssignStore>>;
+  // Link code of the List's active Assignment.
+  const activeCode = async (store: Store, listId: ObjectId) => (await store.assignments.findOne({ listId, active: true }))!.code;
+  // Logs in a fresh Owner and creates one Task per title.
+  async function seedTasks(email: string, titles: string[]) {
+    const owner = browser(); await owner.login(email);
+    for (const title of titles) await owner.post("/assign/tasks", { title });
+    const store = await openAssignStore(db);
+    const task = async (title: string) => (await store.tasks.findOne({ title }))!;
+    const id = async (title: string) => (await task(title))._id.toHexString();
+    return { owner, store, task, id };
+  }
+  // Opens an SSE stream on the test server; readUntil collects text until the needle shows up.
+  async function openStream(path: string, headers: Record<string, string> = {}) {
+    serverAddress ??= await app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const response = await fetch(`${serverAddress}${path}`, { headers, signal: controller.signal });
+    const reader = response.body!.getReader();
+    const readUntil = async (needle: string, attempts = 4) => {
+      let text = "";
+      for (let attempt = 0; attempt < attempts && !text.includes(needle); attempt++) {
+        const chunk = await Promise.race([reader.read(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("SSE timeout")), 3000))]);
+        text += new TextDecoder().decode(chunk.value);
+      }
+      return text;
+    };
+    return { response, reader, readUntil, close: () => controller.abort() };
+  }
   it("builds a List, gives one scoped link, and revokes it", async () => {
     const owner = browser(); await owner.login("owner@example.com");
     expect((await owner.post("/assign/tasks", { title: "Pack books", tags: "move" })).statusCode).toBe(303);
@@ -49,7 +80,7 @@ describe("Task assignment workflow", () => {
     const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
     const link = `/l/${assignment.code}`;
     expect((await app.inject({ method: "GET", url: link })).body).toContain("Pack books");
-    expect((await app.inject({ method: "POST", url: `${link}/tasks/${task._id}/status`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "status=done" })).statusCode).toBe(303);
+    expect((await postForm(`${link}/tasks/${task._id}/status`, "status=done")).statusCode).toBe(303);
     expect((await store.tasks.findOne({ _id: task._id }))!.status).toBe("done");
     expect((await owner.get("/assign")).body).toContain("1 of 1 done");
     await owner.post(`/assign/lists/${list._id}/revoke`);
@@ -104,25 +135,17 @@ describe("Task assignment workflow", () => {
     expect((await store.assignments.findOne({ _id: assignment._id }))!.viewCount).toBe(2);
     expect(await store.events.countDocuments({ kind: "assignment.opened" })).toBe(1);
     await owner.post(`/assign/lists/${list._id}/remove`, { taskId: task._id.toHexString() });
-    const stale = await app.inject({ method: "POST", url: `${url}/tasks/${task._id}/status`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "status=done" });
+    const stale = await postForm(`${url}/tasks/${task._id}/status`, "status=done");
     expect(stale.statusCode).toBe(404);
   });
   it("streams a saved change to the Owner", async () => {
     const owner = browser(); await owner.login("owner@example.com");
-    const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const controller = new AbortController();
+    const stream = await openStream("/assign/events", { cookie: owner.cookie() });
     try {
-      const response = await fetch(`${address}/assign/events`, { headers: { cookie: owner.cookie() }, signal: controller.signal });
-      expect(response.status).toBe(200);
-      const reader = response.body!.getReader();
+      expect(stream.response.status).toBe(200);
       await owner.post("/assign/tasks", { title: "Live Task" });
-      let text = "";
-      for (let i = 0; i < 3 && !text.includes("task.create"); i++) {
-        const chunk = await Promise.race([reader.read(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("SSE timeout")), 3000))]);
-        text += new TextDecoder().decode(chunk.value);
-      }
-      expect(text).toContain("task.create");
-    } finally { controller.abort(); }
+      expect(await stream.readUntil("task.create", 3)).toContain("task.create");
+    } finally { stream.close(); }
   });
   it("shows the occupied List and reuses a Person by case", async () => {
     const owner = browser(); await owner.login("owner@example.com");
@@ -162,15 +185,9 @@ describe("Task assignment workflow", () => {
     const first = (await store.events.findOne({ kind: "task.create" }))!.seq;
     await owner.post("/assign/tasks", { title: "Second" });
     const second = (await store.events.find({ kind: "task.create" }).sort({ seq: -1 }).limit(1).next())!.seq;
-    const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const read = async (lastId: string) => {
-      const controller = new AbortController();
-      try {
-        const response = await fetch(`${address}/assign/events`, { headers: { cookie: owner.cookie(), "last-event-id": lastId }, signal: controller.signal });
-        const reader = response.body!.getReader(); let body = "";
-        for (let i = 0; i < 3 && !body.includes("data:"); i++) body += new TextDecoder().decode((await reader.read()).value);
-        return body;
-      } finally { controller.abort(); }
+      const stream = await openStream("/assign/events", { cookie: owner.cookie(), "last-event-id": lastId });
+      try { return await stream.readUntil("data:", 3); } finally { stream.close(); }
     };
     const replay = await read(String(first));
     expect(replay).toContain(`id: ${second}`);
@@ -186,20 +203,16 @@ describe("Task assignment workflow", () => {
     const store = await openAssignStore(db), list = (await store.lists.findOne({ name: "Work" }))!;
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sam" });
     const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
-    const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const controller = new AbortController();
+    const stream = await openStream(`/l/${assignment.code}/events`);
     try {
-      const response = await fetch(`${address}/l/${assignment.code}/events`, { signal: controller.signal });
-      expect(response.status).toBe(200);
-      const reader = response.body!.getReader();
+      expect(stream.response.status).toBe(200);
       expect((await app.inject({ method: "POST", url: `/l/${assignment.code}/view` })).statusCode).toBe(204);
       await owner.post(`/assign/lists/${list._id}/revoke`);
-      let text = "";
-      for (let i = 0; i < 4 && !text.includes("event: revoked"); i++) text += new TextDecoder().decode((await reader.read()).value);
+      const text = await stream.readUntil("event: revoked");
       expect(text).toContain("event: revoked");
       expect(text).not.toContain("assignment.opened");
-      expect((await reader.read()).done).toBe(true);
-    } finally { controller.abort(); }
+      expect((await stream.reader.read()).done).toBe(true);
+    } finally { stream.close(); }
   });
   it("purges only expired tokens and old views, twice safely", async () => {
     const store = await openAssignStore(db), now = new Date("2026-11-12T00:00:00Z");
@@ -219,7 +232,7 @@ describe("Task assignment workflow", () => {
     await owner.post("/assign/tasks", { title: "A" });
     await owner.post("/assign/tasks", { title: "B" });
     const store = await openAssignStore(db), tasks = await store.tasks.find({}).toArray();
-    await owner.post("/assign/lists", { name: "Checklist", taskIds: tasks.map(t => t._id.toHexString()) });
+    await owner.post("/assign/lists", { name: "Checklist", taskIds: tasks.map(task => task._id.toHexString()) });
     const list = (await store.lists.findOne({ name: "Checklist" }))!;
     for (const task of tasks) await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
     expect(await store.events.countDocuments({ listId: list._id, kind: "list.complete" })).toBe(1);
@@ -236,8 +249,8 @@ describe("Task assignment workflow", () => {
     const docs = Array.from({ length: 51 }, (_, i) => ({ ownerId: account._id, title: `Task ${i}`, tags: [], instruction: "", note: "", blockedReason: "", status: "open" as const, createdAt: at, updatedAt: at }));
     await store.tasks.insertMany(docs);
     const tasks = await store.tasks.find({ ownerId: account._id }).toArray();
-    expect((await owner.post("/assign/lists", { name: "Too many", taskIds: tasks.map(t => t._id.toHexString()) })).statusCode).toBe(400);
-    expect((await owner.post("/assign/lists", { name: "Full", taskIds: tasks.slice(0, 50).map(t => t._id.toHexString()) })).statusCode).toBe(303);
+    expect((await owner.post("/assign/lists", { name: "Too many", taskIds: tasks.map(task => task._id.toHexString()) })).statusCode).toBe(400);
+    expect((await owner.post("/assign/lists", { name: "Full", taskIds: tasks.slice(0, 50).map(task => task._id.toHexString()) })).statusCode).toBe(303);
     const list = (await store.lists.findOne({ name: "Full" }))!;
     expect((await owner.post(`/assign/lists/${list._id}/add`, { taskId: tasks[50]!._id.toHexString() })).statusCode).toBe(400);
     expect((await store.lists.findOne({ _id: list._id }))!.taskCount).toBe(50);
@@ -303,25 +316,18 @@ describe("Task assignment workflow", () => {
     const store = await openAssignStore(db), stuck = (await store.tasks.findOne({ title: "Stuck" }))!, jammed = (await store.tasks.findOne({ title: "Jammed" }))!;
     await owner.post("/assign/lists", { name: "Jobs", taskIds: [stuck._id.toHexString(), jammed._id.toHexString()], person: "Lena" });
     const assignment = (await store.assignments.findOne({ active: true }))!;
-    const link = `/l/${assignment.code}`, form = { "content-type": "application/x-www-form-urlencoded" };
-    expect((await app.inject({ method: "POST", url: `${link}/tasks/${stuck._id}/status`, headers: form, payload: "status=blocked" })).statusCode).toBe(303);
+    const link = `/l/${assignment.code}`;
+    expect((await postForm(`${link}/tasks/${stuck._id}/status`, "status=blocked")).statusCode).toBe(303);
     expect((await store.tasks.findOne({ _id: stuck._id }))!.status).toBe("blocked");
-    await app.inject({ method: "POST", url: `${link}/tasks/${jammed._id}/status`, headers: form, payload: "status=blocked&note=Waiting+for+keys" });
+    await postForm(`${link}/tasks/${jammed._id}/status`, "status=blocked&note=Waiting+for+keys");
     expect((await app.inject({ method: "GET", url: link })).body).toContain("Waiting for keys");
     expect((await owner.get("/assign")).body).toContain("Waiting for keys");
     expect((await owner.get(`/assign/tasks/${jammed._id}`)).body).toContain("Waiting for keys");
     expect(await store.tasks.countDocuments({ blockedReason: { $exists: true } })).toBe(0);
   });
   describe("Create List from selection and the Lists sidebar", () => {
-    const setup = async (email: string, titles: string[]) => {
-      const owner = browser(); await owner.login(email);
-      for (const title of titles) await owner.post("/assign/tasks", { title });
-      const store = await openAssignStore(db);
-      const id = async (title: string) => (await store.tasks.findOne({ title }))!._id.toHexString();
-      return { owner, store, id };
-    };
     it("creates a Draft List without a Person and records no first assignment", async () => {
-      const { owner, store, id } = await setup("draft@example.com", ["A", "B"]);
+      const { owner, store, id } = await seedTasks("draft@example.com", ["A", "B"]);
       const reply = await owner.post("/assign/lists", { name: "Prep", taskIds: [await id("A"), await id("B")] });
       const list = (await store.lists.findOne({ name: "Prep" }))!;
       expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
@@ -330,7 +336,7 @@ describe("Task assignment workflow", () => {
       expect(await store.tasks.countDocuments({ listId: list._id })).toBe(2);
     });
     it("creates List and Assignment together, records first assignment once, and tags nothing as Additional", async () => {
-      const { owner, store, id } = await setup("assign@example.com", ["A"]);
+      const { owner, store, id } = await seedTasks("assign@example.com", ["A"]);
       const reply = await owner.post("/assign/lists", { name: "Go", taskIds: await id("A"), person: "Nadia" });
       const list = (await store.lists.findOne({ name: "Go" }))!;
       expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
@@ -341,19 +347,19 @@ describe("Task assignment workflow", () => {
       expect((await store.lists.findOne({ _id: list._id }))!.firstAssignedAt).toEqual(first);
     });
     it("leaves no List, Assignment or attached Task when creation is rejected", async () => {
-      const { owner, store, id } = await setup("atomic@example.com", ["A", "B"]);
-      const a = await id("A"), b = await id("B");
-      expect((await owner.post("/assign/lists", { name: "Bad", taskIds: a, person: "x".repeat(201) })).statusCode).toBe(400);
+      const { owner, store, id } = await seedTasks("atomic@example.com", ["A", "B"]);
+      const idA = await id("A"), idB = await id("B");
+      expect((await owner.post("/assign/lists", { name: "Bad", taskIds: idA, person: "x".repeat(201) })).statusCode).toBe(400);
       expect(await store.lists.countDocuments({})).toBe(0); expect(await store.assignments.countDocuments({})).toBe(0); expect(await store.people.countDocuments({})).toBe(0);
       expect((await store.tasks.findOne({ title: "A" }))!.listId).toBeUndefined();
-      await owner.post("/assign/lists", { name: "First", taskIds: a });
-      const again = await owner.post("/assign/lists", { name: "Second", taskIds: [b, a], person: "Sam" });
+      await owner.post("/assign/lists", { name: "First", taskIds: idA });
+      const again = await owner.post("/assign/lists", { name: "Second", taskIds: [idB, idA], person: "Sam" });
       expect(again.statusCode).toBe(400); expect(again.body).toContain("First");
       expect(await store.lists.countDocuments({})).toBe(1); expect(await store.assignments.countDocuments({})).toBe(0); expect(await store.people.countDocuments({})).toBe(0);
       expect((await store.tasks.findOne({ title: "B" }))!.listId).toBeUndefined();
     });
     it("shows a disabled checkbox labelled with the List for Tasks already in one", async () => {
-      const { owner, id } = await setup("disabled@example.com", ["Taken", "Free"]);
+      const { owner, id } = await seedTasks("disabled@example.com", ["Taken", "Free"]);
       await owner.post("/assign/lists", { name: "Mine", taskIds: await id("Taken") });
       const html = (await owner.get("/assign/tasks")).body;
       const taken = html.match(/<input type="checkbox"[^>]*disabled[^>]*>[^<]*Taken[\s\S]{0,200}/)?.[0] || "";
@@ -362,18 +368,18 @@ describe("Task assignment workflow", () => {
       expect(html.match(/name="taskIds"[^>]*form="select-tasks"/g)).toHaveLength(1);
     });
     it("renders a labelled sidebar of every List with status and done count, kept current", async () => {
-      const { owner, store, id } = await setup("sidebar@example.com", ["A", "B", "C"]);
+      const { owner, store, id } = await seedTasks("sidebar@example.com", ["A", "B", "C"]);
       await owner.post("/assign/lists", { name: "Drafty", taskIds: await id("C") });
       await owner.post("/assign/lists", { name: "Sent", taskIds: [await id("A"), await id("B")], person: "Zed" });
-      const a = (await store.tasks.findOne({ title: "A" }))!;
-      await owner.post(`/assign/tasks/${a._id}/status`, { status: "done" });
+      const taskA = (await store.tasks.findOne({ title: "A" }))!;
+      await owner.post(`/assign/tasks/${taskA._id}/status`, { status: "done" });
       const html = (await owner.get("/assign/tasks")).body;
-      const side = html.match(/<(?:nav|aside)[^>]*class="list-sidebar"[\s\S]*?<\/(?:nav|aside)>/)![0];
-      expect(side).toMatch(/aria-label(?:ledby)?=/);
-      expect(side).toMatch(/Sent[\s\S]*?Assigned[\s\S]*?1\/2/);
-      expect(side).toMatch(/Drafty[\s\S]*?Draft[\s\S]*?0\/1/);
+      const sidebar = html.match(/<(?:nav|aside)[^>]*class="list-sidebar"[\s\S]*?<\/(?:nav|aside)>/)![0];
+      expect(sidebar).toMatch(/aria-label(?:ledby)?=/);
+      expect(sidebar).toMatch(/Sent[\s\S]*?Assigned[\s\S]*?1\/2/);
+      expect(sidebar).toMatch(/Drafty[\s\S]*?Draft[\s\S]*?0\/1/);
       const list = (await store.lists.findOne({ name: "Sent" }))!;
-      expect(side).toContain(`href="/assign/lists/${list._id}"`);
+      expect(sidebar).toContain(`href="/assign/lists/${list._id}"`);
       expect(html).toContain("new EventSource");
     });
   });
@@ -403,7 +409,7 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "B" });
     const replaced = await app.inject({ method: "GET", url: `/l/${first.code}` });
     expect(replaced.body).toContain("replaced by a newer one"); expect(replaced.body).not.toContain("Private</h1>");
-    const stale = await app.inject({ method: "POST", url: `/l/${first.code}/tasks/${new ObjectId()}/status`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "status=done" });
+    const stale = await postForm(`/l/${first.code}/tasks/${new ObjectId()}/status`, "status=done");
     expect(stale.body).toContain("replaced by a newer one");
     const second = (await store.assignments.findOne({ listId: list._id, active: true }))!;
     await owner.post(`/assign/lists/${list._id}/revoke`);
@@ -413,7 +419,6 @@ describe("Task assignment workflow", () => {
     const owner = browser(); await owner.login("inactive@example.com");
     await owner.post("/assign/tasks", { title: "Secret errand" }); await owner.post("/assign/tasks", { title: "Other errand" });
     const store = await openAssignStore(db);
-    const form = { "content-type": "application/x-www-form-urlencoded" };
     const revoked = "This List has been revoked. Ask the person who sent it for a new link.";
     for (const [i, how] of ["revoke", "deleteList", "deletePerson"].entries()) {
       await owner.post("/assign/lists", { name: `Hidden${i}` });
@@ -427,7 +432,7 @@ describe("Task assignment workflow", () => {
       const page = await app.inject({ method: "GET", url: `/l/${link.code}` });
       expect(page.body).toContain(revoked); expect(page.body).not.toContain("Secret errand"); expect(page.body).not.toContain("replaced");
       for (const action of [`tasks/${task._id}/status`, `tasks/${task._id}/note`, "view"]) {
-        const res = await app.inject({ method: "POST", url: `/l/${link.code}/${action}`, headers: form, payload: "status=done&note=x" });
+        const res = await postForm(`/l/${link.code}/${action}`, "status=done&note=x");
         expect(res.statusCode).toBe(200); expect(res.body).toContain(revoked); expect(res.body).not.toContain("Secret errand");
       }
       expect((await store.tasks.findOne({ _id: task._id }))!.status).not.toBe("done");
@@ -500,6 +505,22 @@ describe("Task assignment workflow", () => {
       await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
       for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(body).not.toContain("Overdue");
     });
+    it("marks an Overdue Task in the collapsed summary on both pages, never a Done one", async () => {
+      const { owner, task, link } = await dueTask();
+      const summaryOf = (body: string) => body.match(/<summary>[\s\S]*?<\/summary>/)![0];
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) {
+        expect(summaryOf(body)).toContain("Overdue"); expect(summaryOf(body)).toMatch(/class="[^"]*overdue/);
+      }
+      await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(summaryOf(body)).not.toContain("Overdue");
+    });
+    it("reveals the Blocked Note first by cancelling the button's submit, and still posts status=blocked without script", async () => {
+      const { link } = await dueTask();
+      const body = (await app.inject({ method: "GET", url: link })).body;
+      expect(body).toContain('<button name="status" value="blocked" data-block>Blocked</button>');
+      expect(body).toMatch(/closest\('\[data-block\]'\);if\(!b\)return;e\.preventDefault\(\)/);
+      expect(body).toMatch(/<div data-block-note hidden>[\s\S]*?<button name="status" value="blocked">Save Blocked<\/button>/);
+    });
     it("lets the Owner change and clear a Deadline but not the Assignee", async () => {
       const { owner, store, task, link } = await dueTask();
       const base = { title: "Due", tags: "", instruction: "" };
@@ -507,7 +528,7 @@ describe("Task assignment workflow", () => {
       expect((await store.tasks.findOne({ _id: task._id }))!.deadline!.toISOString()).toBe("2099-05-06T08:00:00.000Z");
       expect((await owner.post(`/assign/tasks/${task._id}/edit`, { ...base, deadlineDate: "nope" })).statusCode).toBe(400);
       expect((await store.tasks.findOne({ _id: task._id }))!.deadline!.toISOString()).toBe("2099-05-06T08:00:00.000Z");
-      const post = (path: string, payload: Record<string, string>) => app.inject({ method: "POST", url: `${link}${path}`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: new URLSearchParams(payload).toString() });
+      const post = (path: string, payload: Record<string, string>) => postForm(`${link}${path}`, payload);
       await post(`/tasks/${task._id}/status`, { status: "blocked", deadlineDate: "2001-01-01" });
       await post(`/tasks/${task._id}/note`, { note: "hi", deadline: "2001-01-01", deadlineDate: "2001-01-01" });
       for (const path of [`/tasks/${task._id}/edit`, `/tasks/${task._id}/deadline`]) expect((await post(path, { title: "X", deadlineDate: "2001-01-01" })).statusCode).toBeGreaterThanOrEqual(400);
@@ -530,21 +551,14 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sam" });
     await owner.post(`/assign/lists/${list._id}/remove`, { taskId: extra._id.toHexString() });
     const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
-    const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const controller = new AbortController();
+    const stream = await openStream(`/l/${assignment.code}/events`);
     try {
-      const response = await fetch(`${address}/l/${assignment.code}/events`, { signal: controller.signal });
-      const reader = response.body!.getReader();
       await owner.post(`/assign/lists/${list._id}/add`, { taskId: extra._id.toHexString() });
-      let added = "";
-      for (let j = 0; j < 3 && !added.includes("New Task added"); j++) added += new TextDecoder().decode((await reader.read()).value);
-      expect(added).toContain("New Task added: Extra");
+      expect(await stream.readUntil("New Task added", 3)).toContain("New Task added: Extra");
       await owner.post(`/assign/lists/${list._id}/remove`, { taskId: extra._id.toHexString() });
-      let removed = "";
-      for (let j = 0; j < 3 && !removed.includes("Task removed"); j++) removed += new TextDecoder().decode((await reader.read()).value);
-      expect(removed).toContain("Task removed: Extra");
+      expect(await stream.readUntil("Task removed", 3)).toContain("Task removed: Extra");
       expect((await owner.get("/assign/feed")).body).toContain("Added Extra to Notices");
-    } finally { controller.abort(); }
+    } finally { stream.close(); }
   });
 
   it("delivers an added Task only to its Owner and its own Assignee, after storing it", async () => {
@@ -560,7 +574,7 @@ describe("Task assignment workflow", () => {
     for (const [name, person, who] of [["Mine", "Sam", owner], ["Sibling", "Tia", owner], ["Theirs", "Uma", other]] as const) {
       const list = (await store.lists.findOne({ name }))!;
       await who.post(`/assign/lists/${list._id}/assign`, { person });
-      codes[name] = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      codes[name] = await activeCode(store, list._id);
     }
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const controller = new AbortController();
@@ -600,53 +614,53 @@ describe("Task assignment workflow", () => {
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
       const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
       const link = `/l/${assignment.code}`;
-      const assigneePost = (status: string, note = "") => app.inject({ method: "POST", url: `${link}/tasks/${task._id}/status`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: new URLSearchParams({ status, note }).toString() });
+      const assigneePost = (status: string, note = "") => postForm(`${link}/tasks/${task._id}/status`, { status, note });
       const assigneePage = async () => (await app.inject({ method: "GET", url: link })).body;
       const ownerPage = async () => (await owner.get("/assign/tasks")).body;
       return { owner, store, task, list, assigneePost, assigneePage, ownerPage };
     }
     it("offers exactly the valid status buttons on both pages", async () => {
-      const t = await assigned();
-      const both = async () => [statusButtons(await t.ownerPage()), statusButtons(await t.assigneePage())];
-      expect(await both()).toEqual([["Blocked", "Done"], ["Blocked", "Done"]]);
-      await t.assigneePost("blocked");
-      expect(await both()).toEqual([["Done", "Reopen"], ["Done", "Reopen"]]);
-      await t.assigneePost("done");
-      expect(await both()).toEqual([["Reopen"], ["Reopen"]]);
+      const scene = await assigned();
+      const bothPages = async () => [statusButtons(await scene.ownerPage()), statusButtons(await scene.assigneePage())];
+      expect(await bothPages()).toEqual([["Blocked", "Done"], ["Blocked", "Done"]]);
+      await scene.assigneePost("blocked");
+      expect(await bothPages()).toEqual([["Done", "Reopen"], ["Done", "Reopen"]]);
+      await scene.assigneePost("done");
+      expect(await bothPages()).toEqual([["Reopen"], ["Reopen"]]);
     });
     it("lets Blocked be posted as a plain form submit", async () => {
-      const t = await assigned();
-      expect(await t.assigneePage()).toMatch(/<button[^>]*name="status"[^>]*value="blocked"[^>]*data-block|<button[^>]*data-block[^>]*name="status"[^>]*value="blocked"/);
+      const scene = await assigned();
+      expect(await scene.assigneePage()).toMatch(/<button[^>]*name="status"[^>]*value="blocked"[^>]*data-block|<button[^>]*data-block[^>]*name="status"[^>]*value="blocked"/);
     });
     it("reopens a Done Task in one click, from the collapsed row, and clears the completed List", async () => {
-      const t = await assigned();
-      await t.assigneePost("done");
-      expect((await t.store.lists.findOne({ _id: t.list._id }))!.completedAt).toBeTruthy();
-      const collapsed = outsideDetails(await t.assigneePage());
+      const scene = await assigned();
+      await scene.assigneePost("done");
+      expect((await scene.store.lists.findOne({ _id: scene.list._id }))!.completedAt).toBeTruthy();
+      const collapsed = outsideDetails(await scene.assigneePage());
       expect(collapsed).toContain("Reopen");
-      expect((await t.assigneePost("open")).statusCode).toBe(303);
-      expect((await t.store.tasks.findOne({ _id: t.task._id }))!.status).toBe("open");
-      expect((await t.store.lists.findOne({ _id: t.list._id }))!.completedAt).toBeUndefined();
-      await t.owner.post(`/assign/tasks/${t.task._id}/status`, { status: "done" });
-      expect((await t.owner.post(`/assign/tasks/${t.task._id}/status`, { status: "open" })).statusCode).toBe(303);
-      expect((await t.store.tasks.findOne({ _id: t.task._id }))!.status).toBe("open");
+      expect((await scene.assigneePost("open")).statusCode).toBe(303);
+      expect((await scene.store.tasks.findOne({ _id: scene.task._id }))!.status).toBe("open");
+      expect((await scene.store.lists.findOne({ _id: scene.list._id }))!.completedAt).toBeUndefined();
+      await scene.owner.post(`/assign/tasks/${scene.task._id}/status`, { status: "done" });
+      expect((await scene.owner.post(`/assign/tasks/${scene.task._id}/status`, { status: "open" })).statusCode).toBe(303);
+      expect((await scene.store.tasks.findOne({ _id: scene.task._id }))!.status).toBe("open");
     });
     it("collapses Tasks to title and buttons for the Assignee, and reveals details on expansion", async () => {
-      const t = await assigned();
-      await t.assigneePost("blocked", "Need paint");
+      const scene = await assigned();
+      await scene.assigneePost("blocked", "Need paint");
       for (const status of ["blocked", "done"]) {
-        if (status === "done") await t.assigneePost("done", "");
-        const { summary, body } = rowParts(await t.assigneePage());
+        if (status === "done") await scene.assigneePost("done", "");
+        const { summary, body } = rowParts(await scene.assigneePage());
         expect(summary).toContain("Pack books");
         for (const hidden of ["badge", "Deadline", "Use small boxes", "move"]) expect(summary).not.toContain(hidden);
         for (const shown of ["Use small boxes", "move", "Deadline"]) expect(body).toContain(shown);
       }
-      expect(rowParts(await t.assigneePage()).body).toContain("Need paint");
+      expect(rowParts(await scene.assigneePage()).body).toContain("Need paint");
     });
     it("collapses Tasks to checkbox, title, badge and buttons for the Owner", async () => {
-      const t = await assigned();
-      await t.owner.post("/assign/tasks", { title: "Loose task", instruction: "Secret detail" });
-      const html = await t.ownerPage();
+      const scene = await assigned();
+      await scene.owner.post("/assign/tasks", { title: "Loose task", instruction: "Secret detail" });
+      const html = await scene.ownerPage();
       const loose = html.slice(html.indexOf("Loose task") - 400);
       expect(loose).toMatch(/type="checkbox"[^>]*>Select Loose task/);
       const { summary, body } = rowParts(loose);
@@ -667,10 +681,10 @@ describe("Task assignment workflow", () => {
       const id = async (title: string) => (await task(title))._id.toHexString();
       return { owner, store, id, task };
     };
-    const linkPage = async (store: Awaited<ReturnType<typeof openAssignStore>>, listId: ObjectId) => (await app.inject({ method: "GET", url: `/l/${(await store.assignments.findOne({ listId, active: true }))!.code}` })).body;
+    const linkPage = async (store: Awaited<ReturnType<typeof openAssignStore>>, listId: ObjectId) => (await app.inject({ method: "GET", url: `/l/${await activeCode(store, listId)}` })).body;
 
     it("tags only Tasks added after first assignment, through Done, revoke and reassign to another Person", async () => {
-      const { owner, store, id, task } = await setup("addtag@example.com", ["Early", "Late"]);
+      const { owner, store, id, task } = await seedTasks("addtag@example.com", ["Early", "Late"]);
       await owner.post("/assign/lists", { name: "Tagged", taskIds: await id("Early") });
       const list = (await store.lists.findOne({ name: "Tagged" }))!;
       await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("Late") });
@@ -692,7 +706,7 @@ describe("Task assignment workflow", () => {
     });
 
     it("enforces the one-List rule from both entry points", async () => {
-      const { owner, store, id } = await setup("onelist@example.com", ["Mine", "Taken", "Free"]);
+      const { owner, store, id } = await seedTasks("onelist@example.com", ["Mine", "Taken", "Free"]);
       await owner.post("/assign/lists", { name: "One", taskIds: await id("Mine") });
       await owner.post("/assign/lists", { name: "Two", taskIds: await id("Taken") });
       const one = (await store.lists.findOne({ name: "One" }))!, two = (await store.lists.findOne({ name: "Two" }))!;
@@ -707,14 +721,14 @@ describe("Task assignment workflow", () => {
     });
 
     it("offers Add to List on the Tasks page with the Owner's existing Lists", async () => {
-      const { owner } = await setup("offer@example.com", ["Solo"]);
+      const { owner } = await seedTasks("offer@example.com", ["Solo"]);
       await owner.post("/assign/lists", { name: "Existing" });
       const html = (await owner.get("/assign/tasks")).body;
       expect(html).toContain("Add to List"); expect(html).toMatch(/<select name="listId">[^]*Existing/);
     });
 
     it("makes a completed List not completed again when a Task is added", async () => {
-      const { owner, store, id, task } = await setup("reopen@example.com", ["Only", "More"]);
+      const { owner, store, id, task } = await seedTasks("reopen@example.com", ["Only", "More"]);
       await owner.post("/assign/lists", { name: "Finished", taskIds: await id("Only"), person: "Sam" });
       const list = (await store.lists.findOne({ name: "Finished" }))!;
       await owner.post(`/assign/tasks/${(await task("Only"))._id}/status`, { status: "done" });
@@ -727,21 +741,13 @@ describe("Task assignment workflow", () => {
   });
 
   describe("Removed Task rows", () => {
-    async function removedSetup(email: string, titles: string[]) {
-      const owner = browser(); await owner.login(email);
-      for (const title of titles) await owner.post("/assign/tasks", { title });
-      const store = await openAssignStore(db);
-      const task = async (title: string) => (await store.tasks.findOne({ title }))!;
-      const id = async (title: string) => (await task(title))._id.toHexString();
-      return { owner, store, task, id };
-    }
     const page = async (code: string) => (await app.inject({ method: "GET", url: `/l/${code}` })).body;
     const removedSection = (html: string) => html.match(/<h2>Removed<\/h2>[^]*?<\/section>/)?.[0] || "";
 
     it("shows a deleted Task by its title as Removed, with no buttons or Note", async () => {
-      const { owner, store, id } = await removedSetup("rm-delete@example.com", ["Keep", "Doomed"]);
+      const { owner, store, id } = await seedTasks("rm-delete@example.com", ["Keep", "Doomed"]);
       await owner.post("/assign/lists", { name: "Gone", taskIds: [await id("Keep"), await id("Doomed")], person: "Sam" });
-      const list = (await store.lists.findOne({ name: "Gone" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      const list = (await store.lists.findOne({ name: "Gone" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/tasks/${await id("Doomed")}/delete`);
       const section = removedSection(await page(code));
       expect(section).toContain("Doomed"); expect(section).toContain("Removed"); expect(section).toMatch(/<time/);
@@ -749,9 +755,9 @@ describe("Task assignment workflow", () => {
     });
 
     it("shows both Done and not-Done removals but nothing for a Draft List", async () => {
-      const { owner, store, id } = await removedSetup("rm-done@example.com", ["Stay", "Finished", "Open", "DraftOne"]);
+      const { owner, store, id } = await seedTasks("rm-done@example.com", ["Stay", "Finished", "Open", "DraftOne"]);
       await owner.post("/assign/lists", { name: "Live", taskIds: [await id("Stay"), await id("Finished"), await id("Open")], person: "Sam" });
-      const live = (await store.lists.findOne({ name: "Live" }))!, code = (await store.assignments.findOne({ listId: live._id, active: true }))!.code;
+      const live = (await store.lists.findOne({ name: "Live" }))!, code = await activeCode(store, live._id);
       await owner.post(`/assign/tasks/${await id("Finished")}/status`, { status: "done" });
       await owner.post(`/assign/lists/${live._id}/remove`, { taskId: await id("Finished") });
       await owner.post(`/assign/lists/${live._id}/remove`, { taskId: await id("Open") });
@@ -764,14 +770,14 @@ describe("Task assignment workflow", () => {
       await owner.post(`/assign/lists/${draft._id}/add`, { taskId: await id("DraftTwo") });
       await owner.post(`/assign/tasks/${await id("DraftTwo")}/delete`);
       await owner.post(`/assign/lists/${draft._id}/assign`, { person: "Tia" });
-      const draftCode = (await store.assignments.findOne({ listId: draft._id, active: true }))!.code;
+      const draftCode = await activeCode(store, draft._id);
       expect(await page(draftCode)).not.toContain("Removed");
     });
 
     it("clears the Removed row on re-add and tags the Task Additional", async () => {
-      const { owner, store, id } = await removedSetup("rm-readd@example.com", ["Base", "Back"]);
+      const { owner, store, id } = await seedTasks("rm-readd@example.com", ["Base", "Back"]);
       await owner.post("/assign/lists", { name: "Readd", taskIds: [await id("Base"), await id("Back")], person: "Sam" });
-      const list = (await store.lists.findOne({ name: "Readd" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      const list = (await store.lists.findOne({ name: "Readd" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Back") });
       expect(removedSection(await page(code))).toContain("Back");
       await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("Back") });
@@ -781,9 +787,9 @@ describe("Task assignment workflow", () => {
     });
 
     it("excludes Removed rows from progress and completes an all-Done remainder", async () => {
-      const { owner, store, id } = await removedSetup("rm-progress@example.com", ["One", "Two", "Three"]);
+      const { owner, store, id } = await seedTasks("rm-progress@example.com", ["One", "Two", "Three"]);
       await owner.post("/assign/lists", { name: "Prog", taskIds: [await id("One"), await id("Two"), await id("Three")], person: "Sam" });
-      const list = (await store.lists.findOne({ name: "Prog" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+      const list = (await store.lists.findOne({ name: "Prog" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/tasks/${await id("One")}/status`, { status: "done" });
       await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Three") });
       await owner.post(`/assign/tasks/${await id("Two")}/delete`);
@@ -795,20 +801,18 @@ describe("Task assignment workflow", () => {
     });
 
     it("tells the open page and the Board feed when a Task is removed or deleted", async () => {
-      const { owner, store, id } = await removedSetup("rm-live@example.com", ["Base", "Out", "Zap"]);
+      const { owner, store, id } = await seedTasks("rm-live@example.com", ["Base", "Out", "Zap"]);
       await owner.post("/assign/lists", { name: "Feed", taskIds: [await id("Base"), await id("Out"), await id("Zap")], person: "Sam" });
-      const list = (await store.lists.findOne({ name: "Feed" }))!, code = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
-      const address = await app.listen({ host: "127.0.0.1", port: 0 }), controller = new AbortController();
+      const list = (await store.lists.findOne({ name: "Feed" }))!, code = await activeCode(store, list._id);
+      const stream = await openStream(`/l/${code}/events`);
       try {
-        const reader = (await fetch(`${address}/l/${code}/events`, { signal: controller.signal })).body!.getReader();
-        const read = async (needle: string) => { let text = ""; for (let j = 0; j < 4 && !text.includes(needle); j++) text += new TextDecoder().decode((await reader.read()).value); return text; };
         await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Out") });
-        expect(await read("Task removed: Out")).toContain("Task removed: Out");
+        expect(await stream.readUntil("Task removed: Out")).toContain("Task removed: Out");
         await owner.post(`/assign/tasks/${await id("Zap")}/delete`);
-        expect(await read("Task removed: Zap")).toContain("Task removed: Zap");
+        expect(await stream.readUntil("Task removed: Zap")).toContain("Task removed: Zap");
         const feed = (await owner.get("/assign/feed")).body;
         expect(feed).toContain("Removed Out from Feed"); expect(feed).toContain("Removed Zap from Feed");
-      } finally { controller.abort(); }
+      } finally { stream.close(); }
     });
   });
 

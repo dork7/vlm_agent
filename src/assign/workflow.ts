@@ -42,9 +42,10 @@ const badge = (status: TaskStatus) => `<span class="badge ${status}">${statusLab
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const timeTag = (at: Date) => `<time datetime="${at.toISOString()}">${at.toISOString().slice(0, 16).replace("T", " ")} UTC</time>`;
 const deadlineTag = (task: TaskDoc, now: Date) => task.deadline ? `<span class="deadline${task.status !== "done" && task.deadline < now ? " overdue" : ""}">Deadline <time data-absolute datetime="${task.deadline.toISOString()}">${task.deadline.toISOString()}</time>${task.status !== "done" && task.deadline < now ? " · Overdue" : ""}</span>` : "";
+const overdueTag = (task: TaskDoc, now: Date) => task.deadline && task.status !== "done" && task.deadline < now ? ' <span class="badge overdue">Overdue</span>' : "";
 const additionalTag = (task: TaskDoc, list?: ListDoc | null) => list?.firstAssignedAt && task.addedToListAt && task.addedToListAt >= list.firstAssignedAt ? ' <span class="badge">Additional task</span>' : "";
 const statusForm = (action: string, task: TaskDoc & { _id: ObjectId }) => `<form method="post" action="${action}" class="status-actions">${task.status === "open" ? `<button name="status" value="blocked" data-block>Blocked</button><button name="status" value="done">Done</button>` : task.status === "blocked" ? `<button name="status" value="done">Done</button><button name="status" value="open">Reopen</button>` : `<button name="status" value="open">Reopen</button>`}<div data-block-note hidden><label for="block-note-${task._id}">Note</label><small class="hint">Say what's blocking you here, if anything.</small><textarea id="block-note-${task._id}" name="note" maxlength="2000">${esc(task.note)}</textarea><button name="status" value="blocked">Save Blocked</button></div></form>`;
-const taskDisclosure = (task: TaskDoc & { _id: ObjectId }, action: string, now: Date, list?: ListDoc | null, owner = false, noteAction?: string) => `<article class="task-row"><div class="task-heading">${owner ? task.listId ? `<label><input type="checkbox" disabled>Select ${esc(task.title)} <span class="hint">(already in ${esc(list?.name || "a List")})</span></label> <a class="hint" href="/assign/lists/${task.listId}">Open List</a>` : `<label><input type="checkbox" name="taskIds" value="${task._id}" form="select-tasks">Select ${esc(task.title)}</label>` : ""}<details><summary>${owner ? `<a href="/assign/tasks/${task._id}">${esc(task.title)}</a> ${badge(task.status)}` : esc(task.title)}${additionalTag(task,list)}</summary><div>${task.instruction ? `<p class="instruction">${esc(task.instruction)}</p>` : ""}${task.tags.length ? `<p>Tags: ${task.tags.map(esc).join(", ")}</p>` : ""}${deadlineTag(task,now)}${noteAction ? noteForm(noteAction, task, "Say what's blocking you here, if anything.") : task.note ? `<p>Note: ${esc(task.note)}</p>` : ""}</div></details>${statusForm(action,task)}</div></article>`;
+const taskDisclosure = (task: TaskDoc & { _id: ObjectId }, action: string, now: Date, list?: ListDoc | null, owner = false, noteAction?: string) => `<article class="task-row"><div class="task-heading">${owner ? task.listId ? `<label><input type="checkbox" disabled>Select ${esc(task.title)} <span class="hint">(already in ${esc(list?.name || "a List")})</span></label> <a class="hint" href="/assign/lists/${task.listId}">Open List</a>` : `<label><input type="checkbox" name="taskIds" value="${task._id}" form="select-tasks">Select ${esc(task.title)}</label>` : ""}<details><summary>${owner ? `<a href="/assign/tasks/${task._id}">${esc(task.title)}</a> ${badge(task.status)}` : esc(task.title)}${additionalTag(task,list)}${overdueTag(task,now)}</summary><div>${task.instruction ? `<p class="instruction">${esc(task.instruction)}</p>` : ""}${task.tags.length ? `<p>Tags: ${task.tags.map(esc).join(", ")}</p>` : ""}${deadlineTag(task,now)}${noteAction ? noteForm(noteAction, task, "Say what's blocking you here, if anything.") : task.note ? `<p>Note: ${esc(task.note)}</p>` : ""}</div></details>${statusForm(action,task)}</div></article>`;
 const noteForm = (action: string, task: TaskDoc & { _id: ObjectId }, hint: string) => `<form method="post" action="${action}"><div class="field"><label for="note-${task._id}">Note</label><small class="hint" id="note-${task._id}-hint">${hint}</small><textarea id="note-${task._id}" name="note" maxlength="2000" aria-describedby="note-${task._id}-hint">${esc(task.note)}</textarea></div><button>Save note</button></form>`;
 const deleteListMessage = (active: number, count: number) => `Revokes ${plural(active, "active link")} and returns ${plural(count, "Task")} to Unassigned Tasks. The Tasks themselves are kept.`;
 // Native modal: traps focus, closes on Escape. The link still opens the confirmation page when scripts are off.
@@ -118,29 +119,36 @@ async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }
 }
 
 async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId, name: string) {
+  let createdPersonId: ObjectId | undefined;
   let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() });
-  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() }); } }
+  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); createdPersonId = result.insertedId; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() }); } }
   if (!person) throw new Error("Could not create Person");
-  const previous = await ctx.store.assignments.findOne({ ownerId, listId, active: true });
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
-  while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
-  if (previous) await ctx.store.assignments.updateMany({ ownerId, listId, active: true }, { $set: { active: false, revokedAt: ctx.now(), replacedAt: ctx.now() } });
-  try { await ctx.store.assignments.insertOne({ ownerId, listId, personId: person._id, code, active: true, viewCount: 0 }); }
-  catch (error) { if (previous) await ctx.store.assignments.updateOne({ _id: previous._id }, { $set: { active: true }, $unset: { revokedAt: "", replacedAt: "" } }); throw error; }
-  await ctx.store.lists.updateOne({ _id: listId, ownerId }, { $set: { status: "active" } });
-  await ctx.store.lists.updateOne({ _id: listId, ownerId, firstAssignedAt: { $exists: false } }, { $set: { firstAssignedAt: ctx.now() } });
-  if (previous) await recordEvent(ctx, ownerId, "assignment.revoke", { listId, personId: previous.personId });
-  await recordEvent(ctx, ownerId, "assignment.create", { listId, personId: person._id });
+  try {
+    const previous = await ctx.store.assignments.findOne({ ownerId, listId, active: true });
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
+    while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
+    if (previous) await ctx.store.assignments.updateMany({ ownerId, listId, active: true }, { $set: { active: false, revokedAt: ctx.now(), replacedAt: ctx.now() } });
+    try { await ctx.store.assignments.insertOne({ ownerId, listId, personId: person._id, code, active: true, viewCount: 0 }); }
+    catch (error) { if (previous) await ctx.store.assignments.updateOne({ _id: previous._id }, { $set: { active: true }, $unset: { revokedAt: "", replacedAt: "" } }); throw error; }
+    await ctx.store.lists.updateOne({ _id: listId, ownerId }, { $set: { status: "active" } });
+    await ctx.store.lists.updateOne({ _id: listId, ownerId, firstAssignedAt: { $exists: false } }, { $set: { firstAssignedAt: ctx.now() } });
+    if (previous) await recordEvent(ctx, ownerId, "assignment.revoke", { listId, personId: previous.personId });
+    await recordEvent(ctx, ownerId, "assignment.create", { listId, personId: person._id });
+  } catch (error) {
+    if (createdPersonId) await ctx.store.people.deleteOne({ _id: createdPersonId, ownerId });
+    throw error;
+  }
 }
 async function addTasks(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }, ids: ObjectId[]) {
   if (!ids.length || ids.length > 50 || list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
   const tasks = await ctx.store.tasks.find({ ownerId, _id: { $in: ids } }).toArray();
   if (tasks.length !== ids.length || tasks.some(t => t.listId)) return "Task already in another List or not found.";
   const now = ctx.now();
-  const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" }, $pull: { removedTasks: { taskId: { $in: ids } } } });
+  const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" } });
   if (!reserved.modifiedCount) return "A List holds at most 50 Tasks.";
   const attached = await ctx.store.tasks.updateMany({ ownerId, _id: { $in: ids }, listId: { $exists: false } }, { $set: { listId: list._id, ...(list.firstAssignedAt ? { addedToListAt: now } : {}) } });
   if (attached.modifiedCount !== ids.length) { await ctx.store.tasks.updateMany({ ownerId, listId: list._id, _id: { $in: ids } }, { $unset: { listId: "", addedToListAt: "" } }); await ctx.store.lists.updateOne({ _id: list._id }, { $inc: { taskCount: -ids.length } }); return "A Task was added to another List. Try again."; }
+  await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $pull: { removedTasks: { taskId: { $in: ids } } } });
   if (list.status === "active") for (const task of tasks) await recordEvent(ctx, ownerId, "list.add", { listId: list._id, taskId: task._id, fromValue: task.title, summary: `New Task added: ${task.title}` });
   return null;
 }
