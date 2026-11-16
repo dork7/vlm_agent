@@ -384,4 +384,75 @@ describe("Task assignment workflow", () => {
     } finally { controller.abort(); }
   });
 
+  describe("status buttons and collapsed Tasks", () => {
+    const statusButtons = (html: string) => [...html.matchAll(/<button[^>]*name="status"[^>]*>(.*?)<\/button>/g)].map(m => m[1]!).filter(label => label !== "Save Blocked");
+    const outsideDetails = (html: string) => { let depth = 0, out = ""; for (const part of html.split(/(<\/?details[^>]*>)/)) { if (/^<details/.test(part)) depth++; else if (part === "</details>") depth--; else if (!depth) out += part; } return out; };
+    const rowParts = (html: string) => { const m = html.match(/<details>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/); return { summary: m![1]!, body: m![2]! }; };
+    async function assigned() {
+      const owner = browser(); await owner.login("buttons@example.com");
+      await owner.post("/assign/tasks", { title: "Pack books", instruction: "Use small boxes", tags: "move", deadlineDate: "2099-01-02", deadlineTime: "10:00", timezoneOffset: "0" });
+      const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Pack books" }))!;
+      await owner.post("/assign/lists", { name: "Move-out", taskIds: task._id.toHexString() });
+      const list = (await store.lists.findOne({ name: "Move-out" }))!;
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
+      const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+      const link = `/l/${assignment.code}`;
+      const assigneePost = (status: string, note = "") => app.inject({ method: "POST", url: `${link}/tasks/${task._id}/status`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: new URLSearchParams({ status, note }).toString() });
+      const assigneePage = async () => (await app.inject({ method: "GET", url: link })).body;
+      const ownerPage = async () => (await owner.get("/assign/tasks")).body;
+      return { owner, store, task, list, assigneePost, assigneePage, ownerPage };
+    }
+    it("offers exactly the valid status buttons on both pages", async () => {
+      const t = await assigned();
+      const both = async () => [statusButtons(await t.ownerPage()), statusButtons(await t.assigneePage())];
+      expect(await both()).toEqual([["Blocked", "Done"], ["Blocked", "Done"]]);
+      await t.assigneePost("blocked");
+      expect(await both()).toEqual([["Done", "Reopen"], ["Done", "Reopen"]]);
+      await t.assigneePost("done");
+      expect(await both()).toEqual([["Reopen"], ["Reopen"]]);
+    });
+    it("lets Blocked be posted as a plain form submit", async () => {
+      const t = await assigned();
+      expect(await t.assigneePage()).toMatch(/<button[^>]*name="status"[^>]*value="blocked"[^>]*data-block|<button[^>]*data-block[^>]*name="status"[^>]*value="blocked"/);
+    });
+    it("reopens a Done Task in one click, from the collapsed row, and clears the completed List", async () => {
+      const t = await assigned();
+      await t.assigneePost("done");
+      expect((await t.store.lists.findOne({ _id: t.list._id }))!.completedAt).toBeTruthy();
+      const collapsed = outsideDetails(await t.assigneePage());
+      expect(collapsed).toContain("Reopen");
+      expect((await t.assigneePost("open")).statusCode).toBe(303);
+      expect((await t.store.tasks.findOne({ _id: t.task._id }))!.status).toBe("open");
+      expect((await t.store.lists.findOne({ _id: t.list._id }))!.completedAt).toBeUndefined();
+      await t.owner.post(`/assign/tasks/${t.task._id}/status`, { status: "done" });
+      expect((await t.owner.post(`/assign/tasks/${t.task._id}/status`, { status: "open" })).statusCode).toBe(303);
+      expect((await t.store.tasks.findOne({ _id: t.task._id }))!.status).toBe("open");
+    });
+    it("collapses Tasks to title and buttons for the Assignee, and reveals details on expansion", async () => {
+      const t = await assigned();
+      await t.assigneePost("blocked", "Need paint");
+      for (const status of ["blocked", "done"]) {
+        if (status === "done") await t.assigneePost("done", "");
+        const { summary, body } = rowParts(await t.assigneePage());
+        expect(summary).toContain("Pack books");
+        for (const hidden of ["badge", "Deadline", "Use small boxes", "move"]) expect(summary).not.toContain(hidden);
+        for (const shown of ["Use small boxes", "move", "Deadline"]) expect(body).toContain(shown);
+      }
+      expect(rowParts(await t.assigneePage()).body).toContain("Need paint");
+    });
+    it("collapses Tasks to checkbox, title, badge and buttons for the Owner", async () => {
+      const t = await assigned();
+      await t.owner.post("/assign/tasks", { title: "Loose task", instruction: "Secret detail" });
+      const html = await t.ownerPage();
+      const loose = html.slice(html.indexOf("Loose task") - 400);
+      expect(loose).toMatch(/type="checkbox"[^>]*>Select Loose task/);
+      const { summary, body } = rowParts(loose);
+      expect(summary).toContain("Loose task");
+      expect(summary).toContain("badge");
+      expect(summary).not.toContain("Secret detail");
+      expect(body).toContain("Secret detail");
+      expect(outsideDetails(loose)).toContain('value="done"');
+    });
+  });
+
 });
