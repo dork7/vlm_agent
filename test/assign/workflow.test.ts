@@ -312,6 +312,71 @@ describe("Task assignment workflow", () => {
     expect((await owner.get(`/assign/tasks/${jammed._id}`)).body).toContain("Waiting for keys");
     expect(await store.tasks.countDocuments({ blockedReason: { $exists: true } })).toBe(0);
   });
+  describe("Create List from selection and the Lists sidebar", () => {
+    const setup = async (email: string, titles: string[]) => {
+      const owner = browser(); await owner.login(email);
+      for (const title of titles) await owner.post("/assign/tasks", { title });
+      const store = await openAssignStore(db);
+      const id = async (title: string) => (await store.tasks.findOne({ title }))!._id.toHexString();
+      return { owner, store, id };
+    };
+    it("creates a Draft List without a Person and records no first assignment", async () => {
+      const { owner, store, id } = await setup("draft@example.com", ["A", "B"]);
+      const reply = await owner.post("/assign/lists", { name: "Prep", taskIds: [await id("A"), await id("B")] });
+      const list = (await store.lists.findOne({ name: "Prep" }))!;
+      expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
+      expect(list.status).toBe("draft"); expect(list.firstAssignedAt).toBeUndefined();
+      expect(await store.assignments.countDocuments({ listId: list._id })).toBe(0);
+      expect(await store.tasks.countDocuments({ listId: list._id })).toBe(2);
+    });
+    it("creates List and Assignment together, records first assignment once, and tags nothing as Additional", async () => {
+      const { owner, store, id } = await setup("assign@example.com", ["A"]);
+      const reply = await owner.post("/assign/lists", { name: "Go", taskIds: await id("A"), person: "Nadia" });
+      const list = (await store.lists.findOne({ name: "Go" }))!;
+      expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
+      const first = list.firstAssignedAt; expect(first).toBeInstanceOf(Date); expect(list.status).toBe("active");
+      expect(await store.assignments.countDocuments({ listId: list._id, active: true })).toBe(1);
+      expect((await owner.get(`/assign/lists/${list._id}`)).body).not.toContain("Additional task");
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: "Other" });
+      expect((await store.lists.findOne({ _id: list._id }))!.firstAssignedAt).toEqual(first);
+    });
+    it("leaves no List, Assignment or attached Task when creation is rejected", async () => {
+      const { owner, store, id } = await setup("atomic@example.com", ["A", "B"]);
+      const a = await id("A"), b = await id("B");
+      expect((await owner.post("/assign/lists", { name: "Bad", taskIds: a, person: "x".repeat(201) })).statusCode).toBe(400);
+      expect(await store.lists.countDocuments({})).toBe(0); expect(await store.assignments.countDocuments({})).toBe(0); expect(await store.people.countDocuments({})).toBe(0);
+      expect((await store.tasks.findOne({ title: "A" }))!.listId).toBeUndefined();
+      await owner.post("/assign/lists", { name: "First", taskIds: a });
+      const again = await owner.post("/assign/lists", { name: "Second", taskIds: [b, a], person: "Sam" });
+      expect(again.statusCode).toBe(400); expect(again.body).toContain("First");
+      expect(await store.lists.countDocuments({})).toBe(1); expect(await store.assignments.countDocuments({})).toBe(0); expect(await store.people.countDocuments({})).toBe(0);
+      expect((await store.tasks.findOne({ title: "B" }))!.listId).toBeUndefined();
+    });
+    it("shows a disabled checkbox labelled with the List for Tasks already in one", async () => {
+      const { owner, id } = await setup("disabled@example.com", ["Taken", "Free"]);
+      await owner.post("/assign/lists", { name: "Mine", taskIds: await id("Taken") });
+      const html = (await owner.get("/assign/tasks")).body;
+      const taken = html.match(/<input type="checkbox"[^>]*disabled[^>]*>[^<]*Taken[\s\S]{0,200}/)?.[0] || "";
+      expect(taken).toContain("Mine");
+      expect(html).toMatch(/<input type="checkbox" name="taskIds" value="[0-9a-f]{24}" form="select-tasks">/);
+      expect(html.match(/name="taskIds"[^>]*form="select-tasks"/g)).toHaveLength(1);
+    });
+    it("renders a labelled sidebar of every List with status and done count, kept current", async () => {
+      const { owner, store, id } = await setup("sidebar@example.com", ["A", "B", "C"]);
+      await owner.post("/assign/lists", { name: "Drafty", taskIds: await id("C") });
+      await owner.post("/assign/lists", { name: "Sent", taskIds: [await id("A"), await id("B")], person: "Zed" });
+      const a = (await store.tasks.findOne({ title: "A" }))!;
+      await owner.post(`/assign/tasks/${a._id}/status`, { status: "done" });
+      const html = (await owner.get("/assign/tasks")).body;
+      const side = html.match(/<(?:nav|aside)[^>]*class="list-sidebar"[\s\S]*?<\/(?:nav|aside)>/)![0];
+      expect(side).toMatch(/aria-label(?:ledby)?=/);
+      expect(side).toMatch(/Sent[\s\S]*?Assigned[\s\S]*?1\/2/);
+      expect(side).toMatch(/Drafty[\s\S]*?Draft[\s\S]*?0\/1/);
+      const list = (await store.lists.findOne({ name: "Sent" }))!;
+      expect(side).toContain(`href="/assign/lists/${list._id}"`);
+      expect(html).toContain("new EventSource");
+    });
+  });
   it("creates and assigns selected Tasks, then tags additions and shows removals", async () => {
     const owner = browser(); await owner.login("selected@example.com");
     for (const title of ["Initial", "Later"]) await owner.post("/assign/tasks", { title });
