@@ -618,4 +618,72 @@ describe("Task assignment workflow", () => {
     });
   });
 
+  describe("Add Tasks to an existing List", () => {
+    const setup = async (email: string, titles: string[]) => {
+      const owner = browser(); await owner.login(email);
+      for (const title of titles) await owner.post("/assign/tasks", { title });
+      const store = await openAssignStore(db);
+      const task = async (title: string) => (await store.tasks.findOne({ title }))!;
+      const id = async (title: string) => (await task(title))._id.toHexString();
+      return { owner, store, id, task };
+    };
+    const linkPage = async (store: Awaited<ReturnType<typeof openAssignStore>>, listId: ObjectId) => (await app.inject({ method: "GET", url: `/l/${(await store.assignments.findOne({ listId, active: true }))!.code}` })).body;
+
+    it("tags only Tasks added after first assignment, through Done, revoke and reassign to another Person", async () => {
+      const { owner, store, id, task } = await setup("addtag@example.com", ["Early", "Late"]);
+      await owner.post("/assign/lists", { name: "Tagged", taskIds: await id("Early") });
+      const list = (await store.lists.findOne({ name: "Tagged" }))!;
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("Late") });
+      const additional = (html: string) => (html.match(/Additional task/g) || []).length;
+      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(0);
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sam" });
+      expect(additional(await linkPage(store, list._id))).toBe(0);
+      await owner.post("/assign/tasks", { title: "After" });
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("After") });
+      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
+      expect(additional(await linkPage(store, list._id))).toBe(1);
+      await owner.post(`/assign/tasks/${(await task("After"))._id}/status`, { status: "done" });
+      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
+      expect(additional(await linkPage(store, list._id))).toBe(1);
+      await owner.post(`/assign/lists/${list._id}/revoke`);
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: "Priya" });
+      expect(additional(await linkPage(store, list._id))).toBe(1);
+      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
+    });
+
+    it("enforces the one-List rule from both entry points", async () => {
+      const { owner, store, id } = await setup("onelist@example.com", ["Mine", "Taken", "Free"]);
+      await owner.post("/assign/lists", { name: "One", taskIds: await id("Mine") });
+      await owner.post("/assign/lists", { name: "Two", taskIds: await id("Taken") });
+      const one = (await store.lists.findOne({ name: "One" }))!, two = (await store.lists.findOne({ name: "Two" }))!;
+      expect((await owner.post(`/assign/lists/${one._id}/add`, { taskId: await id("Taken") })).statusCode).toBe(400);
+      expect((await owner.post("/assign/lists/add-selected", { listId: one._id.toHexString(), taskIds: [await id("Taken"), await id("Free")] })).statusCode).toBe(400);
+      expect((await store.tasks.findOne({ title: "Free" }))!.listId).toBeUndefined();
+      expect((await store.tasks.findOne({ title: "Taken" }))!.listId).toEqual(two._id);
+      const picker = (await owner.get(`/assign/lists/${one._id}`)).body;
+      expect(picker).toContain(`value="${await id("Free")}"`); expect(picker).not.toContain(`value="${await id("Taken")}"`);
+      expect((await owner.post("/assign/lists/add-selected", { listId: one._id.toHexString(), taskIds: await id("Free") })).statusCode).toBe(303);
+      expect((await store.tasks.findOne({ title: "Free" }))!.listId).toEqual(one._id);
+    });
+
+    it("offers Add to List on the Tasks page with the Owner's existing Lists", async () => {
+      const { owner } = await setup("offer@example.com", ["Solo"]);
+      await owner.post("/assign/lists", { name: "Existing" });
+      const html = (await owner.get("/assign/tasks")).body;
+      expect(html).toContain("Add to List"); expect(html).toMatch(/<select name="listId">[^]*Existing/);
+    });
+
+    it("makes a completed List not completed again when a Task is added", async () => {
+      const { owner, store, id, task } = await setup("reopen@example.com", ["Only", "More"]);
+      await owner.post("/assign/lists", { name: "Finished", taskIds: await id("Only"), person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Finished" }))!;
+      await owner.post(`/assign/tasks/${(await task("Only"))._id}/status`, { status: "done" });
+      expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeTruthy();
+      await owner.post("/assign/lists/add-selected", { listId: list._id.toHexString(), taskIds: await id("More") });
+      expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeUndefined();
+      await owner.post(`/assign/tasks/${(await task("More"))._id}/status`, { status: "done" });
+      expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeTruthy();
+    });
+  });
+
 });
