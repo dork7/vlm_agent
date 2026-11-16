@@ -547,6 +547,46 @@ describe("Task assignment workflow", () => {
     } finally { controller.abort(); }
   });
 
+  it("delivers an added Task only to its Owner and its own Assignee, after storing it", async () => {
+    const owner = browser(); await owner.login("routing-a@example.com");
+    const other = browser(); await other.login("routing-b@example.com");
+    for (const title of ["Base A", "Base B", "Extra A"]) await owner.post("/assign/tasks", { title });
+    await other.post("/assign/tasks", { title: "Other owner Task" });
+    const store = await openAssignStore(db), find = async (title: string) => (await store.tasks.findOne({ title }))!;
+    await owner.post("/assign/lists", { name: "Mine", taskIds: (await find("Base A"))._id.toHexString() });
+    await owner.post("/assign/lists", { name: "Sibling", taskIds: (await find("Base B"))._id.toHexString() });
+    await other.post("/assign/lists", { name: "Theirs" });
+    const codes: Record<string, string> = {};
+    for (const [name, person, who] of [["Mine", "Sam", owner], ["Sibling", "Tia", owner], ["Theirs", "Uma", other]] as const) {
+      const list = (await store.lists.findOne({ name }))!;
+      await who.post(`/assign/lists/${list._id}/assign`, { person });
+      codes[name] = (await store.assignments.findOne({ listId: list._id, active: true }))!.code;
+    }
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    const open = async (path: string, cookie?: string) => {
+      const reader = (await fetch(`${address}${path}`, { headers: cookie ? { cookie } : {}, signal: controller.signal })).body!.getReader();
+      let text = "";
+      const pump = (async () => { for (;;) { const chunk = await reader.read(); if (chunk.done) return; text += new TextDecoder().decode(chunk.value); } })().catch(() => {});
+      return { text: () => text, pump };
+    };
+    try {
+      const mine = await open(`/l/${codes.Mine}/events`), sibling = await open(`/l/${codes.Sibling}/events`), theirs = await open(`/l/${codes.Theirs}/events`), otherOwner = await open("/assign/events", other.cookie()), ownerStream = await open("/assign/events", owner.cookie());
+      const list = (await store.lists.findOne({ name: "Mine" }))!;
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: (await find("Extra A"))._id.toHexString() });
+      for (let i = 0; i < 50 && !(mine.text().includes("New Task added") && ownerStream.text().includes("New Task added")); i++) await new Promise(r => setTimeout(r, 50));
+      expect(mine.text()).toContain("New Task added: Extra A");
+      expect(ownerStream.text()).toContain("New Task added: Extra A");
+      const stored = (await store.events.findOne({ kind: "list.add", listId: list._id }))!;
+      expect(mine.text()).toContain(`id: ${stored.seq}\n`);
+      await new Promise(r => setTimeout(r, 200));
+      for (const stream of [sibling, theirs, otherOwner]) expect(stream.text()).not.toContain("New Task added");
+      expect(await store.events.countDocuments({ kind: "list.add" })).toBe(1);
+      expect((await owner.get("/assign/feed")).body).toContain("Added Extra A to Mine");
+      expect((await other.get("/assign/feed")).body).not.toContain("Extra A");
+    } finally { controller.abort(); }
+  });
+
   describe("status buttons and collapsed Tasks", () => {
     const statusButtons = (html: string) => [...html.matchAll(/<button[^>]*name="status"[^>]*>(.*?)<\/button>/g)].map(m => m[1]!).filter(label => label !== "Save Blocked");
     const outsideDetails = (html: string) => { let depth = 0, out = ""; for (const part of html.split(/(<\/?details[^>]*>)/)) { if (/^<details/.test(part)) depth++; else if (part === "</details>") depth--; else if (!depth) out += part; } return out; };
