@@ -146,8 +146,8 @@ async function addTasks(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & {
   const now = ctx.now();
   const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" } });
   if (!reserved.modifiedCount) return "A List holds at most 50 Tasks.";
-  const attached = await ctx.store.tasks.updateMany({ ownerId, _id: { $in: ids }, listId: { $exists: false } }, { $set: { listId: list._id, ...(list.firstAssignedAt ? { addedToListAt: now } : {}) } });
-  if (attached.modifiedCount !== ids.length) { await ctx.store.tasks.updateMany({ ownerId, listId: list._id, _id: { $in: ids } }, { $unset: { listId: "", addedToListAt: "" } }); await ctx.store.lists.updateOne({ _id: list._id }, { $inc: { taskCount: -ids.length } }); return "A Task was added to another List. Try again."; }
+  const attached = await ctx.store.tasks.updateMany({ ownerId, _id: { $in: ids }, listId: { $exists: false } }, { $set: { kind: "copy", listId: list._id, ...(list.firstAssignedAt ? { addedToListAt: now } : {}) } });
+  if (attached.modifiedCount !== ids.length) { await ctx.store.tasks.updateMany({ ownerId, listId: list._id, _id: { $in: ids } }, { $set: { kind: "template" }, $unset: { listId: "", addedToListAt: "" } }); await ctx.store.lists.updateOne({ _id: list._id }, { $inc: { taskCount: -ids.length } }); return "A Task was added to another List. Try again."; }
   await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $pull: { removedTasks: { taskId: { $in: ids } } } });
   if (list.status === "active") for (const task of tasks) await recordEvent(ctx, ownerId, "list.add", { listId: list._id, taskId: task._id, fromValue: task.title, summary: `New Task added: ${task.title}` });
   return null;
@@ -172,7 +172,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const form = parseForm(request.body), title = field(form, "title"), instruction = field(form, "instruction"), tags = tagsFrom(form);
     if (!title || !textLimit(title, 200) || !textLimit(instruction, 2000) || tags.length > 5 || tags.some(x => x.length > 30)) return addTaskFailure(reply, form, "Invalid Task fields.");
     const deadline = deadlineFrom(form); if (deadline === "invalid") return addTaskFailure(reply, form, "Invalid Deadline.");
-    const at = ctx.now(); const result = await ctx.store.tasks.insertOne({ ownerId: owner._id, title, instruction, tags, note: "", status: "open", ...(deadline ? { deadline } : {}), createdAt: at, updatedAt: at });
+    const at = ctx.now(); const result = await ctx.store.tasks.insertOne({ kind: "template", ownerId: owner._id, title, instruction, tags, note: "", status: "open", ...(deadline ? { deadline } : {}), createdAt: at, updatedAt: at });
     await recordEvent(ctx, owner._id, "task.create", { taskId: result.insertedId, toValue: title });
     return redirect(reply, "/assign/tasks");
   });
@@ -223,17 +223,17 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     if (tasks.length !== ids.length) return fail(reply, 404, "Task not found.");
     const occupied = tasks.find(t => t.listId); if (occupied) { const other = await ctx.store.lists.findOne({ ownerId: owner._id, _id: occupied.listId }); return fail(reply, 400, `Task already in ${other?.name || "another List"}.`); }
     const list = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: ids.length, createdAt: ctx.now() });
-    const attached = await ctx.store.tasks.updateMany({ ownerId: owner._id, _id: { $in: tasks.map(t => t._id) }, listId: { $exists: false } }, { $set: { listId: list.insertedId } });
+    const attached = await ctx.store.tasks.updateMany({ ownerId: owner._id, _id: { $in: tasks.map(t => t._id) }, listId: { $exists: false } }, { $set: { kind: "copy", listId: list.insertedId } });
     if (attached.modifiedCount !== ids.length) {
-      await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } });
+      await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $set: { kind: "template" }, $unset: { listId: "" } });
       await ctx.store.lists.deleteOne({ _id: list.insertedId, ownerId: owner._id });
       return fail(reply, 409, "A Task was added to another List. Try again.");
     }
     const personName = field(form, "person");
     if (personName) {
-      if (!textLimit(personName, 200)) { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 400, "Invalid Person name."); }
+      if (!textLimit(personName, 200)) { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $set: { kind: "template" }, $unset: { listId: "" } }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 400, "Invalid Person name."); }
       try { await assignList(ctx, owner._id, list.insertedId, personName); }
-      catch { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 500, "Could not assign List."); }
+      catch { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $set: { kind: "template" }, $unset: { listId: "" } }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 500, "Could not assign List."); }
     }
     await recordEvent(ctx, owner._id, "list.create", { listId: list.insertedId, toValue: name });
     return redirect(reply, `/assign/lists/${list.insertedId}`);
@@ -275,7 +275,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const taskId = parseId(field(parseForm(request.body), "taskId")); if (!taskId) return fail(reply, 400, "Invalid Task.");
     const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id, listId: list._id, ...live }); if (!task) return fail(reply, 404, "Task not in List.");
-    await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id }, { $unset: { listId: "" } });
+    await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id }, { $set: { kind: "template" }, $unset: { listId: "" } });
     await removedTask(ctx, task);
     return redirect(reply, `/assign/lists/${list._id}`);
   });
@@ -404,7 +404,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.post("/assign/lists/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     await ctx.store.assignments.updateMany({ ownerId: owner._id, listId: list._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
-    await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list._id }, { $unset: { listId: "" } }); await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "list-deleted" } });
+    await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list._id }, { $set: { kind: "template" }, $unset: { listId: "" } }); await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "list-deleted" } });
     await recordEvent(ctx, owner._id, "list.delete", { listId: list._id }); return redirect(reply, "/assign/lists");
   });
   app.get("/assign/people/:id/delete", async (request, reply) => {

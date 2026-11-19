@@ -97,8 +97,12 @@ The optional date and time by which an Assigned Task should be done; when only a
 _Avoid_: Due date, due time, expiry
 
 **List**:
-A named group of an Owner's Assigned Tasks; an Assigned Task is in at most one List at a time.
+A named group of an Owner's Assigned Tasks; each Task in a List is a copy that belongs to that List only (see ADR 0007).
 _Avoid_: Checklist, group, project
+
+**Template**:
+A Task in no List, never assigned; putting it in a List makes a copy there, and the Template stays reusable.
+_Avoid_: Master task, prototype task, group
 
 **Additional Task**:
 An Assigned Task added to a List after that List was assigned; Tasks added before assignment are not. Shown with an "Additional task" tag.

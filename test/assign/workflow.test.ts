@@ -246,7 +246,7 @@ describe("Task assignment workflow", () => {
   it("refuses a 51st Task in a List", async () => {
     const owner = browser(); await owner.login("owner@example.com");
     const store = await openAssignStore(db), account = (await store.owners.findOne({ email: "owner@example.com" }))!, at = new Date();
-    const docs = Array.from({ length: 51 }, (_, i) => ({ ownerId: account._id, title: `Task ${i}`, tags: [], instruction: "", note: "", blockedReason: "", status: "open" as const, createdAt: at, updatedAt: at }));
+    const docs = Array.from({ length: 51 }, (_, i) => ({ ownerId: account._id, title: `Task ${i}`, tags: [], instruction: "", note: "", blockedReason: "", kind: "template" as const, status: "open" as const, createdAt: at, updatedAt: at }));
     await store.tasks.insertMany(docs);
     const tasks = await store.tasks.find({ ownerId: account._id }).toArray();
     expect((await owner.post("/assign/lists", { name: "Too many", taskIds: tasks.map(task => task._id.toHexString()) })).statusCode).toBe(400);
@@ -309,6 +309,27 @@ describe("Task assignment workflow", () => {
     const task = (await store.tasks.findOne({ title: "neither" }))!;
     expect((await owner.post(`/assign/tasks/${task._id}/status`, { status: "blocked" })).statusCode).toBe(303);
     expect((await store.tasks.findOne({ _id: task._id }))!.status).toBe("blocked");
+  });
+  it("backfills Task kind once: listed Tasks become copies, unlisted become templates", async () => {
+    const owner = browser(); await owner.login("kind@example.com");
+    const store = await openAssignStore(db), account = (await store.owners.findOne({ email: "kind@example.com" }))!;
+    const now = new Date(), listId = new ObjectId();
+    await db.collection("ta_tasks").insertMany([{ title: "listed", listId }, { title: "free" }].map(t => ({ ownerId: account._id, tags: [], instruction: "", note: "", status: "open", createdAt: now, updatedAt: now, ...t })));
+    await openAssignStore(db); await openAssignStore(db);
+    const listed = (await store.tasks.findOne({ title: "listed" }))!, free = (await store.tasks.findOne({ title: "free" }))!;
+    expect(listed.kind).toBe("copy"); expect(listed.listId).toEqual(listId);
+    expect(free.kind).toBe("template"); expect(free.listId).toBeUndefined();
+  });
+  it("keeps Task kind in step with List membership in the existing flows", async () => {
+    const owner = browser(); await owner.login("kind2@example.com");
+    await owner.post("/assign/tasks", { title: "Solo" });
+    const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Solo" }))!;
+    expect(task.kind).toBe("template");
+    await owner.post("/assign/lists", { name: "L", taskIds: task._id.toHexString() });
+    const list = (await store.lists.findOne({ name: "L" }))!;
+    expect((await store.tasks.findOne({ _id: task._id }))!.kind).toBe("copy");
+    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: task._id.toHexString() });
+    expect((await store.tasks.findOne({ _id: task._id }))!.kind).toBe("template");
   });
   it("lets an Assignee block without a Note and shows the Note wherever the reason appeared", async () => {
     const owner = browser(); await owner.login("blocknote@example.com");
