@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AssignContext } from "./context.ts";
 import { currentOwner } from "./auth.ts";
 import { hub } from "./events.ts";
-import type { EventDoc } from "./store.ts";
+import { live, type EventDoc } from "./store.ts";
 import { ObjectId } from "mongodb";
 
 function send(reply: FastifyReply, kind: string, event?: EventDoc) {
@@ -53,6 +53,8 @@ export function registerSse(app: FastifyInstance, ctx: AssignContext) {
     const code = (request.params as { code: string }).code;
     const assignment = await ctx.store.assignments.findOne({ code, active: true });
     if (!assignment) return reply.code(404).send("Link no longer available.");
+    const [list, person] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live })]);
+    if (!list || !person) return reply.code(404).send("Link no longer available.");
     return stream(ctx, request, reply, assignment.ownerId.toHexString(), assignment.listId.toHexString());
   });
 }

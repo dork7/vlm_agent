@@ -2,10 +2,14 @@ import type { Collection, Db, ObjectId } from "mongodb";
 export type OwnerDoc = { email: string; createdAt: Date; lastSeenEventId: number; passwordHash?: string; offeredPassword?: boolean };
 export type LoginTokenDoc = { email: string; tokenHash: string; expiresAt: Date; usedAt?: Date };
 export type RefreshTokenDoc = { ownerId: ObjectId; tokenHash: string; expiresAt: Date; revokedAt?: Date; rotatedAt?: Date; family: string };
+export type DeleteReason = "removed" | "template-deleted" | "list-deleted" | "person-deleted";
+type Retained = { deletedAt?: Date; deleteReason?: DeleteReason };
+// Merge into every query that reads Tasks, Lists or People for a page, count, Board entry or stream.
+export const live = { deletedAt: { $exists: false } } as const;
 export type TaskStatus = "open" | "blocked" | "done";
-export type TaskDoc = { ownerId: ObjectId; title: string; tags: string[]; instruction: string; note: string; status: TaskStatus; listId?: ObjectId; addedToListAt?: Date; deadline?: Date; createdAt: Date; updatedAt: Date };
-export type ListDoc = { ownerId: ObjectId; name: string; status: "draft" | "active"; taskCount: number; createdAt: Date; completedAt?: Date; firstAssignedAt?: Date; removedTasks?: { taskId: ObjectId; title: string; removedAt: Date }[] };
-export type PersonDoc = { ownerId: ObjectId; name: string; nameLower: string };
+export type TaskDoc = { ownerId: ObjectId; title: string; tags: string[]; instruction: string; note: string; status: TaskStatus; listId?: ObjectId; addedToListAt?: Date; deadline?: Date; createdAt: Date; updatedAt: Date; doneAt?: Date } & Retained;
+export type ListDoc = { ownerId: ObjectId; name: string; status: "draft" | "active"; taskCount: number; createdAt: Date; completedAt?: Date; firstAssignedAt?: Date; removedTasks?: { taskId: ObjectId; title: string; removedAt: Date }[] } & Retained;
+export type PersonDoc = { ownerId: ObjectId; name: string; nameLower: string } & Retained;
 export type AssignmentDoc = { ownerId: ObjectId; listId: ObjectId; personId: ObjectId; code: string; active: boolean; revokedAt?: Date; replacedAt?: Date; firstViewedAt?: Date; lastViewedAt?: Date; viewCount: number };
 export type ViewDoc = { ownerId: ObjectId; assignmentId: ObjectId; viewedAt: Date; userAgent: string; browser: string; deviceType: string; counted: boolean };
 export type EventKind = string;

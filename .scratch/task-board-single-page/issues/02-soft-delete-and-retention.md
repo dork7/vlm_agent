@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Deleting a Task, List or Person leaves the row in the database with `deletedAt` and the right reason, and it disappears from every page, count, Board entry and live stream.
 - [ ] Marking a copy Done records `doneAt`; Done copies survive housekeeping.

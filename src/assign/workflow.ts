@@ -7,7 +7,7 @@ import type { AssignContext } from "./context.ts";
 import { currentOwner } from "./auth.ts";
 import { field, fields, parseForm, parseId } from "./http.ts";
 import { recordEvent } from "./events.ts";
-import type { AssignmentDoc, ListDoc, OwnerDoc, PersonDoc, TaskDoc, TaskStatus } from "./store.ts";
+import { live, type AssignmentDoc, type ListDoc, type OwnerDoc, type PersonDoc, type TaskDoc, type TaskStatus } from "./store.ts";
 
 type Params = { id: string; code: string };
 const esc = (x: unknown) => ejs.escapeXML(String(x ?? ""));
@@ -62,10 +62,10 @@ const idFrom = (request: FastifyRequest) => parseId((request.params as Params).i
 const taskLink = (task: TaskDoc & { _id: ObjectId }) => `<a href="/assign/tasks/${task._id}">${esc(task.title)}</a> ${badge(task.status)}`;
 
 async function ownTask(ctx: AssignContext, owner: OwnerDoc & { _id: ObjectId }, request: FastifyRequest) {
-  const _id = idFrom(request); return _id ? ctx.store.tasks.findOne({ _id, ownerId: owner._id }) : null;
+  const _id = idFrom(request); return _id ? ctx.store.tasks.findOne({ _id, ownerId: owner._id, ...live }) : null;
 }
 async function ownList(ctx: AssignContext, owner: OwnerDoc & { _id: ObjectId }, request: FastifyRequest) {
-  const _id = idFrom(request); return _id ? ctx.store.lists.findOne({ _id, ownerId: owner._id }) : null;
+  const _id = idFrom(request); return _id ? ctx.store.lists.findOne({ _id, ownerId: owner._id, ...live }) : null;
 }
 async function activeAssignment(ctx: AssignContext, code: string) {
   return /^[A-Za-z0-9]{10}$/.test(code) ? ctx.store.assignments.findOne({ code, active: true }) : null;
@@ -92,14 +92,14 @@ async function statusChange(ctx: AssignContext, task: TaskDoc & { _id: ObjectId 
   if (!allowed) return "Invalid status transition.";
   const before = task.status;
   const savedNote = status === "blocked" ? note : task.note;
-  await ctx.store.tasks.updateOne({ _id: task._id, ownerId: task.ownerId }, { $set: { status, note: savedNote, updatedAt: ctx.now() } });
+  await ctx.store.tasks.updateOne({ _id: task._id, ownerId: task.ownerId }, status === "done" ? { $set: { status, note: savedNote, updatedAt: ctx.now(), doneAt: ctx.now() } } : { $set: { status, note: savedNote, updatedAt: ctx.now() }, $unset: { doneAt: "" } });
   await recordEvent(ctx, task.ownerId, "task.status", { taskId: task._id, listId: task.listId, personId: actor?.personId, fromValue: before, toValue: `${status}${savedNote ? `: ${savedNote}` : ""}`, summary: `${actor?.name || "Owner"} marked ${task.title} ${status}` });
   if (task.listId && status !== "done") await ctx.store.lists.updateOne({ _id: task.listId, ownerId: task.ownerId }, { $unset: { completedAt: "" } });
   if (task.listId && status === "done") await syncCompletion(ctx, task.ownerId, task.listId);
   return null;
 }
 async function syncCompletion(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId) {
-  const [total, pending] = await Promise.all([ctx.store.tasks.countDocuments({ ownerId, listId }), ctx.store.tasks.countDocuments({ ownerId, listId, status: { $ne: "done" } })]);
+  const [total, pending] = await Promise.all([ctx.store.tasks.countDocuments({ ownerId, listId, ...live }), ctx.store.tasks.countDocuments({ ownerId, listId, ...live, status: { $ne: "done" } })]);
   if (total && !pending) { const won = await ctx.store.lists.findOneAndUpdate({ _id: listId, ownerId, completedAt: { $exists: false } }, { $set: { completedAt: ctx.now() } }); if (won) await recordEvent(ctx, ownerId, "list.complete", { listId }); }
   else await ctx.store.lists.updateOne({ _id: listId, ownerId }, { $unset: { completedAt: "" } });
 }
@@ -107,7 +107,7 @@ const inactiveMessage = (replaced: boolean) => replaced ? "This link has been re
 async function inactiveLink(ctx: AssignContext, code: string, reply: FastifyReply) { const old = await ctx.store.assignments.findOne({ code }); reply.header("X-Robots-Tag", "noindex"); return sendPage(reply, "Link no longer available", `<p>${inactiveMessage(!!old?.replacedAt)}</p>`, { assignee: true }); }
 async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }) {
   if (!task.listId) return;
-  const list = await ctx.store.lists.findOne({ _id: task.listId, ownerId: task.ownerId });
+  const list = await ctx.store.lists.findOne({ _id: task.listId, ownerId: task.ownerId, ...live });
   if (!list) return;
   await ctx.store.lists.updateOne({ _id: list._id, ownerId: task.ownerId }, { $inc: { taskCount: -1 }, ...(list.firstAssignedAt ? { $pull: { removedTasks: { taskId: task._id } } } : {}) });
   if (list.firstAssignedAt) {
@@ -120,8 +120,8 @@ async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }
 
 async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId, name: string) {
   let createdPersonId: ObjectId | undefined;
-  let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() });
-  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); createdPersonId = result.insertedId; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() }); } }
+  let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase(), ...live });
+  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); createdPersonId = result.insertedId; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase(), ...live }); } }
   if (!person) throw new Error("Could not create Person");
   try {
     const previous = await ctx.store.assignments.findOne({ ownerId, listId, active: true });
@@ -141,7 +141,7 @@ async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectI
 }
 async function addTasks(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }, ids: ObjectId[]) {
   if (!ids.length || ids.length > 50 || list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
-  const tasks = await ctx.store.tasks.find({ ownerId, _id: { $in: ids } }).toArray();
+  const tasks = await ctx.store.tasks.find({ ownerId, _id: { $in: ids }, ...live }).toArray();
   if (tasks.length !== ids.length || tasks.some(t => t.listId)) return "Task already in another List or not found.";
   const now = ctx.now();
   const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" } });
@@ -157,14 +157,14 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign/tasks", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const tag = String((request.query as { tag?: string }).tag || "").toLowerCase();
-    const [tasks, allTasks, lists] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, ...(tag ? { tags: tag } : {}) }).sort({ createdAt: -1 }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray(), ctx.store.lists.find({ ownerId: owner._id }).toArray()]);
+    const [tasks, allTasks, lists] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, ...live, ...(tag ? { tags: tag } : {}) }).sort({ createdAt: -1 }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.lists.find({ ownerId: owner._id, ...live }).toArray()]);
     const listName = (id: ObjectId) => lists.find(l => l._id.equals(id))?.name || "a List";
     const create = `<button type="button" data-dialog="add-task" aria-haspopup="dialog">Add Task</button><dialog id="add-task" aria-labelledby="add-task-title"><h2 id="add-task-title">Add Task</h2><form method="post" action="/assign/tasks"><div class="field"><label for="task-title">Title</label><input id="task-title" name="title" maxlength="200" required></div><div class="field"><label for="task-tags">Tags</label><input id="task-tags" name="tags" placeholder="kitchen, urgent"></div><div class="field"><label for="task-instruction">Instructions</label><textarea id="task-instruction" name="instruction" maxlength="2000"></textarea></div><div class="field"><label for="task-deadline">Deadline</label><input id="task-deadline" name="deadlineDate" type="date"><label for="task-deadline-time">Time (defaults to 23:59)</label><input id="task-deadline-time" name="deadlineTime" type="time"></div><input type="hidden" name="timezoneOffset"><button>Add Task</button><button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button></form></dialog>`;
     const filter = `<form class="filters" role="search" aria-label="Filter Tasks"><div class="field"><label for="tag-filter">Filter by tag</label><input id="tag-filter" name="tag" value="${esc(tag)}"></div><div class="actions"><button>Filter</button>${tag ? '<a href="/assign/tasks">Show all Tasks</a>' : ""}</div></form>`;
     const items = tasks.length ? `<div id="task-collection" class="task-collection" data-view="list">${tasks.map(t => taskDisclosure(t, `/assign/tasks/${t._id}/status`, ctx.now(), t.listId ? lists.find(l => l._id.equals(t.listId!)) : null, true)).join("")}</div>` : `<p class="empty">${tag ? `No Tasks tagged “${esc(tag)}”.` : "No Tasks yet. Add your first one above."}</p>`;
     const viewToggle = tasks.length ? '<div id="task-view-toggle" class="view-toggle" role="group" aria-label="Task view" hidden><button type="button" data-task-view="list" aria-controls="task-collection" aria-pressed="true">List</button><button type="button" data-task-view="grid" aria-controls="task-collection" aria-pressed="false">Grid</button></div>' : "";
     const sidebar = `<nav class="list-sidebar" aria-labelledby="list-sidebar-title"><h2 id="list-sidebar-title">Lists</h2>${lists.map(l => { const mine = allTasks.filter(t => t.listId?.equals(l._id)); return `<p><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="badge">${l.status === "active" ? "Assigned" : "Draft"}</span> ${mine.filter(t=>t.status==="done").length}/${mine.length}</p>` }).join("") || '<p>No Lists yet.</p>'}</nav>`;
-    const selected = `<form id="select-tasks" method="post" action="/assign/lists"><button type="button" data-selection-action data-dialog="create-list" disabled>Create List</button><button type="button" data-selection-action data-dialog="add-to-list" disabled>Add to List</button></form><dialog id="create-list" aria-labelledby="create-list-title"><h2 id="create-list-title">Create List</h2><form method="post" action="/assign/lists" id="create-list-form"><label>List name <input name="name" maxlength="200" required></label><label>Person (optional) <input name="person" list="people-names" maxlength="200"></label><datalist id="people-names">${(await ctx.store.people.find({ ownerId: owner._id }).toArray()).map(p=>`<option value="${esc(p.name)}">`).join("")}</datalist><button>Create List</button><button type="button" onclick="this.closest('dialog').close()">Cancel</button></form></dialog><dialog id="add-to-list" aria-labelledby="add-to-list-title"><h2 id="add-to-list-title">Add to List</h2><form method="post" action="/assign/lists/add-selected"><label>List <select name="listId">${lists.map(l=>`<option value="${l._id}">${esc(l.name)}</option>`).join("")}</select></label><button>Add Tasks</button></form></dialog><script>document.addEventListener('submit',e=>{if(e.target.id==='create-list-form'||e.target.action.endsWith('/add-selected')){for(const old of e.target.querySelectorAll('input[data-picked]'))old.remove();for(const checked of document.querySelectorAll('#task-collection input[name=taskIds]:checked')){const h=document.createElement('input');h.type='hidden';h.name='taskIds';h.value=checked.value;h.dataset.picked='';e.target.append(h)}}});document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();document.querySelector('form[action=\"/assign/tasks\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()});</script>`;
+    const selected = `<form id="select-tasks" method="post" action="/assign/lists"><button type="button" data-selection-action data-dialog="create-list" disabled>Create List</button><button type="button" data-selection-action data-dialog="add-to-list" disabled>Add to List</button></form><dialog id="create-list" aria-labelledby="create-list-title"><h2 id="create-list-title">Create List</h2><form method="post" action="/assign/lists" id="create-list-form"><label>List name <input name="name" maxlength="200" required></label><label>Person (optional) <input name="person" list="people-names" maxlength="200"></label><datalist id="people-names">${(await ctx.store.people.find({ ownerId: owner._id, ...live }).toArray()).map(p=>`<option value="${esc(p.name)}">`).join("")}</datalist><button>Create List</button><button type="button" onclick="this.closest('dialog').close()">Cancel</button></form></dialog><dialog id="add-to-list" aria-labelledby="add-to-list-title"><h2 id="add-to-list-title">Add to List</h2><form method="post" action="/assign/lists/add-selected"><label>List <select name="listId">${lists.map(l=>`<option value="${l._id}">${esc(l.name)}</option>`).join("")}</select></label><button>Add Tasks</button></form></dialog><script>document.addEventListener('submit',e=>{if(e.target.id==='create-list-form'||e.target.action.endsWith('/add-selected')){for(const old of e.target.querySelectorAll('input[data-picked]'))old.remove();for(const checked of document.querySelectorAll('#task-collection input[name=taskIds]:checked')){const h=document.createElement('input');h.type='hidden';h.name='taskIds';h.value=checked.value;h.dataset.picked='';e.target.append(h)}}});document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();document.querySelector('form[action=\"/assign/tasks\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()});</script>`;
     return send(reply, "Tasks", `${create}${filter}<div class="tasks-layout">${sidebar}<div>${selected}<div class="task-toolbar"><h2>${tag ? `Tasks tagged “${esc(tag)}”` : "All Tasks"} (${tasks.length})</h2>${viewToggle}</div>${items}</div></div>${taskViewScript}`, { live: "/assign/events", current: "/assign/tasks" });
   });
   app.post("/assign/tasks", async (request, reply) => {
@@ -179,7 +179,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign/tasks/:id", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
-    const list = task.listId ? await ctx.store.lists.findOne({ _id: task.listId, ownerId: owner._id }) : null;
+    const list = task.listId ? await ctx.store.lists.findOne({ _id: task.listId, ownerId: owner._id, ...live }) : null;
     const summary = `<p>${badge(task.status)}${task.note ? ` ${esc(task.note)}` : ""}${list ? ` · In <a href="/assign/lists/${list._id}">${esc(list.name)}</a>` : " · Not in a List yet"}</p>`;
     const details = `<section><h2>Details</h2><form method="post" action="/assign/tasks/${task._id}/edit"><div class="field"><label for="edit-title">Title</label><input id="edit-title" name="title" maxlength="200" value="${esc(task.title)}" required></div><div class="field"><label for="edit-tags">Tags</label><small class="hint" id="edit-tags-hint">Up to 5, separated by commas.</small><input id="edit-tags" name="tags" value="${esc(task.tags.join(", "))}" aria-describedby="edit-tags-hint"></div><div class="field"><label for="edit-instruction">Instructions</label><textarea id="edit-instruction" name="instruction" maxlength="2000">${esc(task.instruction)}</textarea></div><div class="field"><label for="edit-deadline">Deadline</label><input id="edit-deadline" type="date" name="deadlineDate" data-deadline="${task.deadline?.toISOString() || ""}"><input type="time" name="deadlineTime" ></div><input type="hidden" name="timezoneOffset"><button>Save details</button></form><script>document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();const d=document.querySelector('[data-deadline]');if(d.dataset.deadline){const t=new Date(d.dataset.deadline),local=new Date(t.getTime()-t.getTimezoneOffset()*60000).toISOString();d.value=local.slice(0,10);document.querySelector('input[name=deadlineTime]').value=local.slice(11,16)}document.querySelector('form[action$=\"/edit\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()})</script></section>`;
     const body = `<a class="back" href="/assign/tasks">← All Tasks</a>${summary}${deadlineTag(task,ctx.now())}<details><summary>Details</summary>${details}</details><section><h2>Status</h2>${statusForm(`/assign/tasks/${task._id}/status`, task)}</section><section><h2>Note</h2>${noteForm(`/assign/tasks/${task._id}/note`, task, "The assignee sees this note and can edit it.")}</section><p><a href="/assign/tasks/${task._id}/delete">Delete this Task…</a></p>`;
@@ -210,7 +210,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   app.get("/assign/lists", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
-    const [lists, tasks] = await Promise.all([ctx.store.lists.find({ ownerId: owner._id }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray()]);
+    const [lists, tasks] = await Promise.all([ctx.store.lists.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, ...live }).toArray()]);
     const choices = tasks.length ? `<fieldset><legend>Tasks to include <span class="hint">(optional, up to 50)</span></legend>${tasks.map(t => `<label><input type="checkbox" name="taskIds" value="${t._id}" ${t.listId ? "disabled" : ""}>${esc(t.title)}${t.listId ? ` <span class="hint">(already in ${esc(lists.find(l => l._id.equals(t.listId!))?.name || "another List")})</span>` : ""}</label>`).join("")}</fieldset>` : `<p class="hint">You have no Tasks yet. You can <a href="/assign/tasks">add Tasks</a> first, or create an empty List and add them later.</p>`;
     const create = `<section><h2>Create a List</h2><p class="hint">A List groups Tasks so you can share them with one person through a single link.</p><form method="post" action="/assign/lists"><div class="field"><label for="list-name">List name</label><input id="list-name" name="name" maxlength="200" required></div>${choices}<button>Create List</button></form></section>`;
     const items = lists.length ? lists.map(l => `<article><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="badge">${l.status === "active" ? "Assigned" : "Draft"}</span> <span class="muted">· ${plural(l.taskCount, "Task")}</span></article>`).join("") : '<p class="empty">No Lists yet.</p>';
@@ -219,7 +219,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.post("/assign/lists", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const form = parseForm(request.body), name = field(form, "name"), ids = [...new Set(fields(form, "taskIds"))];
     if (!name || !textLimit(name, 200) || ids.length > 50 || ids.some(x => !parseId(x))) return fail(reply, 400, "Invalid List.");
-    const tasks = await ctx.store.tasks.find({ ownerId: owner._id, _id: { $in: ids.map(x => new ObjectId(x)) } }).toArray();
+    const tasks = await ctx.store.tasks.find({ ownerId: owner._id, ...live, _id: { $in: ids.map(x => new ObjectId(x)) } }).toArray();
     if (tasks.length !== ids.length) return fail(reply, 404, "Task not found.");
     const occupied = tasks.find(t => t.listId); if (occupied) { const other = await ctx.store.lists.findOne({ ownerId: owner._id, _id: occupied.listId }); return fail(reply, 400, `Task already in ${other?.name || "another List"}.`); }
     const list = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: ids.length, createdAt: ctx.now() });
@@ -240,7 +240,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   app.get("/assign/lists/:id", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const [tasks, free, assignment, people] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, listId: list._id }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, listId: { $exists: false } }).toArray(), ctx.store.assignments.findOne({ ownerId: owner._id, listId: list._id, active: true }), ctx.store.people.find({ ownerId: owner._id }).toArray()]);
+    const [tasks, free, assignment, people] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, listId: list._id, ...live }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, ...live, listId: { $exists: false } }).toArray(), ctx.store.assignments.findOne({ ownerId: owner._id, listId: list._id, active: true }), ctx.store.people.find({ ownerId: owner._id, ...live }).toArray()]);
     const assignee = assignment && people.find(p => p._id.equals(assignment.personId));
     const done = tasks.filter(t => t.status === "done").length;
     const shared = assignment ? `<p>Assigned to <strong>${esc(assignee?.name || "someone")}</strong> · ${assignment.lastViewedAt ? `Last opened ${timeTag(assignment.lastViewedAt)}` : "Not opened yet"}</p><div class="field"><label for="share-link">Link to send ${esc(assignee?.name || "them")}</label><div class="copy-row"><input id="share-link" readonly value="${esc(ctx.config.publicUrl)}/l/${assignment.code}"><button type="button" data-copy="share-link">Copy link</button></div><small class="hint" id="share-link-status" role="status"></small></div><form method="post" action="/assign/lists/${list._id}/revoke"><p class="hint">Revoking stops this link from working straight away. The Tasks stay in the List.</p><button class="danger">Revoke link</button></form>` : '<p class="hint">Not assigned yet. Assign it to get a link you can send.</p>';
@@ -266,7 +266,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.post("/assign/lists/add-selected", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const form = parseForm(request.body), listId = parseId(field(form, "listId"));
-    const list = listId && await ctx.store.lists.findOne({ _id: listId, ownerId: owner._id }); if (!list) return fail(reply, 404, "List not found.");
+    const list = listId && await ctx.store.lists.findOne({ _id: listId, ownerId: owner._id, ...live }); if (!list) return fail(reply, 404, "List not found.");
     const ids = [...new Set(fields(form, "taskIds"))].map(parseId); if (ids.some(x=>!x)) return fail(reply, 400, "Invalid Task.");
     const error = await addTasks(ctx, owner._id, list, ids as ObjectId[]); if (error) return fail(reply, 400, error);
     return redirect(reply, `/assign/lists/${list._id}`);
@@ -274,7 +274,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.post("/assign/lists/:id/remove", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const taskId = parseId(field(parseForm(request.body), "taskId")); if (!taskId) return fail(reply, 400, "Invalid Task.");
-    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id, listId: list._id }); if (!task) return fail(reply, 404, "Task not in List.");
+    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id, listId: list._id, ...live }); if (!task) return fail(reply, 404, "Task not in List.");
     await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id }, { $unset: { listId: "" } });
     await removedTask(ctx, task);
     return redirect(reply, `/assign/lists/${list._id}`);
@@ -296,7 +296,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const assignment = await activeAssignment(ctx, code);
     reply.header("X-Robots-Tag", "noindex");
     if (!assignment) return inactiveLink(ctx, code, reply);
-    const [list, person, tasks] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId }), ctx.store.tasks.find({ ownerId: assignment.ownerId, listId: assignment.listId }).toArray()]);
+    const [list, person, tasks] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live }), ctx.store.tasks.find({ ownerId: assignment.ownerId, listId: assignment.listId, ...live }).toArray()]);
     if (!list || !person) return inactiveLink(ctx, code, reply);
     const showTask = (t: TaskDoc & { _id: ObjectId }) => taskDisclosure(t, `/l/${code}/tasks/${t._id}/status`, ctx.now(), list, false, `/l/${code}/tasks/${t._id}/note`);
     const done = tasks.filter(t => t.status === "done"), pending = tasks.filter(t => t.status !== "done");
@@ -308,7 +308,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   for (const action of ["status", "note"] as const) app.post(`/l/:code/tasks/:id/${action}`, async (request, reply) => {
     const { code, id } = request.params as Params; const assignment = await activeAssignment(ctx, code); if (!assignment) return inactiveLink(ctx, code, reply);
     const taskId = parseId(id); if (!taskId) return fail(reply, 404, "Task not found.");
-    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId }); if (!task) return fail(reply, 404, "Task not found.");
+    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId, ...live }); if (!task) return fail(reply, 404, "Task not found.");
     const form = parseForm(request.body);
     if (action === "status") {
       const status = field(form, "status"), note = field(form, "note"); if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
@@ -343,7 +343,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const query = request.query as { person?: string; tag?: string; status?: string };
-    const [people, lists, tasks, assignments, unread] = await Promise.all([ctx.store.people.find({ ownerId: owner._id }).toArray(), ctx.store.lists.find({ ownerId: owner._id }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray(), ctx.store.assignments.find({ ownerId: owner._id, active: true }).toArray(), ctx.store.events.countDocuments({ ownerId: owner._id, seq: { $gt: owner.lastSeenEventId } })]);
+    const [people, lists, tasks, assignments, unread] = await Promise.all([ctx.store.people.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.lists.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.assignments.find({ ownerId: owner._id, active: true }).toArray(), ctx.store.events.countDocuments({ ownerId: owner._id, seq: { $gt: owner.lastSeenEventId } })]);
     const shown = (t: TaskDoc) => (!query.tag || t.tags.includes(query.tag)) && (!query.status || t.status === query.status);
     const filtered = Boolean(query.person || query.tag || query.status);
     const sections = people.filter(p => !query.person || p._id.toHexString() === query.person).map(p => {
@@ -380,7 +380,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     return send(reply, "Activity", items || '<p class="empty">No activity yet. Changes to your Tasks and Lists, and updates from the people you assign, show up here.</p>', { live: "/assign/events", current: "/assign/feed" });
   });
   app.get("/assign/people", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const people = await ctx.store.people.find({ ownerId: owner._id }).toArray();
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const people = await ctx.store.people.find({ ownerId: owner._id, ...live }).toArray();
     const body = (await Promise.all(people.map(async p => `<article class="row"><span><strong>${esc(p.name)}</strong> <span class="muted">· ${plural(await ctx.store.assignments.countDocuments({ ownerId: owner._id, personId: p._id, active: true }), "active link")}</span></span><a href="/assign/people/${p._id}/delete" aria-label="Delete ${esc(p.name)}">Delete…</a></article>`))).join("");
     return send(reply, "People", body || '<p class="empty">No people yet. People are added when you <a href="/assign/lists">assign a List</a> to someone.</p>', { current: "/assign/people" });
   });
@@ -392,31 +392,31 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   app.post("/assign/tasks/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
-    await ctx.store.tasks.deleteOne({ _id: task._id, ownerId: owner._id });
+    await ctx.store.tasks.updateOne({ _id: task._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "removed" } });
     if (task.listId) await removedTask(ctx, task);
     await recordEvent(ctx, owner._id, "task.delete", { taskId: task._id, listId: task.listId, fromValue: task.title }); return redirect(reply, "/assign/tasks");
   });
   app.get("/assign/lists/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const count = await ctx.store.tasks.countDocuments({ ownerId: owner._id, listId: list._id }); const active = await ctx.store.assignments.countDocuments({ ownerId: owner._id, listId: list._id, active: true });
+    const count = await ctx.store.tasks.countDocuments({ ownerId: owner._id, listId: list._id, ...live }); const active = await ctx.store.assignments.countDocuments({ ownerId: owner._id, listId: list._id, active: true });
     return send(reply, `Delete ${list.name}?`, confirmDelete(deleteListMessage(active, count), "Delete List", `/assign/lists/${list._id}`), { current: "/assign/lists" });
   });
   app.post("/assign/lists/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     await ctx.store.assignments.updateMany({ ownerId: owner._id, listId: list._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
-    await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list._id }, { $unset: { listId: "" } }); await ctx.store.lists.deleteOne({ _id: list._id, ownerId: owner._id });
+    await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list._id }, { $unset: { listId: "" } }); await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "list-deleted" } });
     await recordEvent(ctx, owner._id, "list.delete", { listId: list._id }); return redirect(reply, "/assign/lists");
   });
   app.get("/assign/people/:id/delete", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id }); if (!person) return fail(reply, 404, "Person not found.");
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id, ...live }); if (!person) return fail(reply, 404, "Person not found.");
     const count = await ctx.store.assignments.countDocuments({ ownerId: owner._id, personId: person._id, active: true }); return send(reply, `Delete ${person.name}?`, confirmDelete(`Revokes ${plural(count, "active link")}. Their Lists go back to drafts and keep their Tasks.`, "Delete Person", "/assign/people"), { current: "/assign/people" });
   });
   app.post("/assign/people/:id/delete", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id }); if (!person) return fail(reply, 404, "Person not found.");
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id, ...live }); if (!person) return fail(reply, 404, "Person not found.");
     const active = await ctx.store.assignments.find({ ownerId: owner._id, personId: person._id, active: true }).toArray();
     await ctx.store.assignments.updateMany({ ownerId: owner._id, personId: person._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
     await ctx.store.lists.updateMany({ ownerId: owner._id, _id: { $in: active.map(a => a.listId) } }, { $set: { status: "draft" } });
-    await ctx.store.people.deleteOne({ _id: person._id, ownerId: owner._id });
+    await ctx.store.people.updateOne({ _id: person._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "person-deleted", nameLower: `${person.nameLower}\u0000deleted:${person._id}` } });
     for (const assignment of active) await recordEvent(ctx, owner._id, "person.delete", { personId: person._id, listId: assignment.listId });
     return redirect(reply, "/assign/people");
   });

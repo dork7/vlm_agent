@@ -816,4 +816,79 @@ describe("Task assignment workflow", () => {
     });
   });
 
+  describe("Retention: soft delete for analytics", () => {
+    it("keeps a deleted Task with its reason and hides it everywhere", async () => {
+      const { owner, store, id, task } = await seedTasks("soft-task@example.com", ["Keeper", "Doomed"]);
+      await owner.post("/assign/lists", { name: "Chores", taskIds: [await id("Keeper"), await id("Doomed")], person: "Sam" });
+      const doomed = await task("Doomed");
+      await owner.post(`/assign/tasks/${doomed._id}/status`, { status: "blocked", note: "stuck" });
+      await owner.post(`/assign/tasks/${doomed._id}/delete`);
+      const row = (await store.tasks.findOne({ _id: doomed._id }))!;
+      expect(row.deletedAt).toBeInstanceOf(Date); expect(row.deleteReason).toBe("removed");
+      expect(row.status).toBe("blocked"); expect(row.note).toBe("stuck");
+      const list = (await store.lists.findOne({ name: "Chores" }))!, code = await activeCode(store, list._id);
+      expect((await owner.get("/assign/tasks")).body).not.toContain(`/assign/tasks/${doomed._id}`);
+      expect((await owner.get("/assign/tasks")).body).toContain("All Tasks (1)");
+      expect((await owner.get(`/assign/tasks/${doomed._id}`)).statusCode).toBe(404);
+      expect((await owner.post(`/assign/tasks/${doomed._id}/status`, { status: "done" })).statusCode).toBe(404);
+      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 1 done)");
+      expect((await owner.get("/assign")).body).toContain("0 of 1 done");
+      const link = (await app.inject({ method: "GET", url: `/l/${code}` })).body;
+      expect(link).toContain("0 of 1 done");
+      expect((await postForm(`/l/${code}/tasks/${doomed._id}/status`, "status=done")).statusCode).toBe(404);
+      expect((await store.tasks.findOne({ _id: doomed._id }))!.status).toBe("blocked");
+      expect((await owner.post(`/assign/lists/${list._id}/add`, { taskId: doomed._id.toHexString() })).statusCode).toBe(400);
+    });
+
+    it("keeps a deleted List, hides it, and ends its link and stream", async () => {
+      const { owner, store, id } = await seedTasks("soft-list@example.com", ["Item"]);
+      await owner.post("/assign/lists", { name: "Doomed List", taskIds: [await id("Item")], person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Doomed List" }))!, code = await activeCode(store, list._id);
+      await owner.post(`/assign/lists/${list._id}/delete`);
+      const row = (await store.lists.findOne({ _id: list._id }))!;
+      expect(row.deletedAt).toBeInstanceOf(Date); expect(row.deleteReason).toBe("list-deleted"); expect(row.name).toBe("Doomed List");
+      expect((await owner.get("/assign/lists")).body).not.toContain("Doomed List");
+      expect((await owner.get("/assign/tasks")).body).not.toContain("Doomed List");
+      expect((await owner.get("/assign")).body).not.toContain("Doomed List");
+      expect((await owner.get(`/assign/lists/${list._id}`)).statusCode).toBe(404);
+      expect((await owner.post(`/assign/lists/${list._id}/edit`, { name: "x" })).statusCode).toBe(404);
+      expect((await owner.post("/assign/lists/add-selected", { listId: list._id.toHexString(), taskIds: await id("Item") })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: `/l/${code}/events` })).statusCode).toBe(404);
+    });
+
+    it("keeps a deleted Person with their name, hides them, and lets the name be reused", async () => {
+      const { owner, store, id } = await seedTasks("soft-person@example.com", ["Job"]);
+      await owner.post("/assign/lists", { name: "Mine", taskIds: [await id("Job")], person: "Zed" });
+      const old = (await store.people.findOne({ name: "Zed" }))!;
+      await owner.post(`/assign/people/${old._id}/delete`);
+      const row = (await store.people.findOne({ _id: old._id }))!;
+      expect(row.deletedAt).toBeInstanceOf(Date); expect(row.deleteReason).toBe("person-deleted"); expect(row.name).toBe("Zed");
+      expect((await owner.get("/assign/people")).body).not.toContain("Zed");
+      expect((await owner.get("/assign")).body).not.toContain("Zed");
+      expect((await owner.get(`/assign/people/${old._id}/delete`)).statusCode).toBe(404);
+      const list = (await store.lists.findOne({ name: "Mine" }))!;
+      expect((await owner.get(`/assign/lists/${list._id}`)).body).not.toContain("<option value=\"Zed\">");
+      expect((await owner.post(`/assign/lists/${list._id}/assign`, { person: "zed" })).statusCode).toBe(303);
+      const again = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+      expect(again.personId.equals(old._id)).toBe(false);
+      expect((await owner.get("/assign/people")).body).toContain("<strong>zed</strong>");
+      expect((await store.people.findOne({ _id: old._id }))!.name).toBe("Zed");
+    });
+
+    it("records doneAt when a Task is marked Done and keeps Done Tasks through housekeeping", async () => {
+      const { owner, store, id, task } = await seedTasks("soft-done@example.com", ["Finish"]);
+      await owner.post("/assign/lists", { name: "Fin", taskIds: [await id("Finish")], person: "Sam" });
+      const t = await task("Finish"), code = await activeCode(store, t.listId!);
+      expect(t.doneAt).toBeUndefined();
+      await postForm(`/l/${code}/tasks/${t._id}/status`, "status=done");
+      const done = (await store.tasks.findOne({ _id: t._id }))!;
+      expect(done.doneAt).toBeInstanceOf(Date);
+      const later = new Date(Date.now() + 400 * 86_400_000);
+      await purgeOld({ store, config: loadAssignConfig({ PUBLIC_URL: "http://assign.test", ASSIGN_JWT_SECRET: "x".repeat(32) })!, mailer: { send: async () => {} }, now: () => later, limiter: createRateLimiter(() => later) });
+      expect(await store.tasks.countDocuments({ _id: t._id, status: "done", doneAt: { $exists: true } })).toBe(1);
+      await postForm(`/l/${code}/tasks/${t._id}/status`, "status=open");
+      expect((await store.tasks.findOne({ _id: t._id }))!.doneAt).toBeUndefined();
+    });
+  });
+
 });
