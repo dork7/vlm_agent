@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
 import { MongoClient, ObjectId, type Db } from "mongodb";
 import { MongoMemoryServer } from "mongodb-memory-server";
@@ -268,6 +268,8 @@ describe("Task assignment workflow", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain(title);
     expect((await owner.get("/assign/tasks?tag=move")).body).toContain("&lt;script&gt;");
+    await owner.post("/assign/lists", { name: "Status", taskIds: task._id.toHexString() });
+    task._id = (await copyFor(store, task))._id;
     expect((await owner.post(`/assign/tasks/${task._id}/status`, { status: "blocked" })).statusCode).toBe(303);
     await owner.post(`/assign/tasks/${task._id}/note`, { note: "Need paint" });
     expect((await store.tasks.findOne({ _id: task._id }))!.note).toBe("Need paint");
@@ -355,6 +357,7 @@ describe("Task assignment workflow", () => {
     expect((await store.tasks.findOne({ title: "note" }))!.note).toBe("old note");
     expect((await store.tasks.findOne({ title: "neither" }))!.note).toBe("");
     const task = (await store.tasks.findOne({ title: "neither" }))!;
+    await store.tasks.updateOne({ _id: task._id }, { $set: { kind: "copy" } });
     expect((await owner.post(`/assign/tasks/${task._id}/status`, { status: "blocked" })).statusCode).toBe(303);
     expect((await store.tasks.findOne({ _id: task._id }))!.status).toBe("blocked");
   });
@@ -1249,5 +1252,76 @@ describe("Task assignment workflow", () => {
     expect(page).toContain("Create list &amp; copy link"); expect(page).toContain("Add to existing"); expect(page).toContain("Clear");
     expect(page).toContain("Create list &amp; copy link button");
     expect(page).not.toContain("tap Add to List");
+  });
+  describe("review fixes", () => {
+    it("Board lists only never-used Templates as unassigned and counts copies", async () => {
+      const { owner, tid } = await seedTasks("rf1@example.com", ["Mop", "Dust"]);
+      let board = (await owner.get("/assign")).body; expect(board).toContain("Mop"); expect(board).toContain("Dust");
+      await owner.post("/assign/lists", { name: "A", taskIds: [await tid("Mop"), await tid("Dust")] });
+      board = (await owner.get("/assign")).body;
+      expect(board).toContain("Every Task is in a List."); expect(board).not.toContain(">Mop<");
+    });
+    it("rolls back the reservation when the insert fails and does not duplicate a Template in a List", async () => {
+      const { owner, store, tid } = await seedTasks("rf2@example.com", ["Mop", "Dust"]);
+      const made = (await owner.post("/assign/lists", { name: "A", taskIds: await tid("Mop"), link: "1" })).json() as { listId: string };
+      const listId = new ObjectId(made.listId);
+      expect((await owner.post(`/assign/lists/${made.listId}/add`, { taskIds: await tid("Mop") })).statusCode).toBe(303);
+      expect(await store.tasks.countDocuments({ listId, title: "Mop", deletedAt: { $exists: false } })).toBe(1);
+      expect((await store.lists.findOne({ _id: listId }))!.taskCount).toBe(1);
+      await owner.post(`/assign/lists/${made.listId}/add`, { taskIds: [await tid("Mop"), await tid("Dust")] });
+      expect(await store.tasks.countDocuments({ listId, deletedAt: { $exists: false } })).toBe(2);
+      expect((await store.lists.findOne({ _id: listId }))!.taskCount).toBe(2);
+      const other = (await store.tasks.findOne({ kind: "template", title: "Dust" }))!;
+      await owner.post("/assign/lists", { name: "B" });
+      const b = (await store.lists.findOne({ name: "B" }))!;
+      const spy = vi.spyOn(Object.getPrototypeOf(store.tasks), "insertMany").mockRejectedValueOnce(new Error("boom"));
+      await owner.post(`/assign/lists/${b._id}/add`, { taskIds: other._id.toHexString() });
+      expect((await store.lists.findOne({ _id: b._id }))!.taskCount).toBe(0);
+      spy.mockRestore();
+    });
+    it("lets an Assignee open the live stream while awaiting a name, and notifies the Owner when the name is bound", async () => {
+      const { owner, store, tid } = await seedTasks("rf4@example.com", ["Mop"]);
+      const made = (await owner.post("/assign/lists", { name: "A", taskIds: await tid("Mop"), link: "1" })).json() as { listId: string; url: string };
+      const code = made.url.split("/l/")[1]!;
+      const assignee = await openStream(`/l/${code}/events`); expect(assignee.response.status).toBe(200);
+      const ownerStream = await openStream("/assign/events", { cookie: owner.cookie() });
+      await ownerStream.readUntil(": connected");
+      expect((await postForm(`/l/${code}/name`, { person: "Sam" })).statusCode).toBe(303);
+      const seen = await ownerStream.readUntil("assignment.claim");
+      expect(seen).toContain("assignment.claim");
+      expect((await owner.get("/assign/feed")).body).toContain("Sam");
+      assignee.close(); ownerStream.close();
+      expect(await store.events.countDocuments({ kind: "assignment.claim" })).toBe(1);
+    });
+    it("keeps List name limits consistent across create, rename and duplicate", async () => {
+      const { owner, store, tid } = await seedTasks("rf6@example.com", ["Mop"]);
+      expect((await owner.post("/assign/lists", { name: "x".repeat(81), taskIds: await tid("Mop") })).statusCode).toBe(400);
+      const name = "y".repeat(80);
+      await owner.post("/assign/lists", { name, taskIds: await tid("Mop") });
+      const list = (await store.lists.findOne({ name }))!;
+      expect((await owner.post(`/assign/lists/${list._id}/duplicate`)).statusCode).toBe(303);
+      const copy = (await store.lists.findOne({ _id: { $ne: list._id } }))!;
+      expect(copy.name.length).toBeLessThanOrEqual(80); expect(copy.name.endsWith(" (copy)")).toBe(true);
+      expect((await owner.post(`/assign/lists/${copy._id}/edit`, { name: copy.name })).statusCode).toBe(303);
+    });
+    it("caps Duplicate List at 50 Tasks and counts the copies created", async () => {
+      const { owner, store, tid } = await seedTasks("rf7@example.com", ["Mop"]);
+      await owner.post("/assign/lists", { name: "A", taskIds: await tid("Mop") });
+      const list = (await store.lists.findOne({ name: "A" }))!;
+      await owner.post(`/assign/lists/${list._id}/duplicate`);
+      const copy = (await store.lists.findOne({ name: "A (copy)" }))!;
+      expect(copy.taskCount).toBe(await store.tasks.countDocuments({ listId: copy._id, deletedAt: { $exists: false } }));
+    });
+    it("rejects status changes on Templates", async () => {
+      const { owner, store, tid } = await seedTasks("rf8@example.com", ["Mop"]);
+      const id = await tid("Mop");
+      expect((await owner.post(`/assign/tasks/${id}/status`, { status: "done" })).statusCode).toBe(400);
+      expect((await store.tasks.findOne({ _id: new ObjectId(id) }))!.status).toBe("open");
+    });
+    it("ignores link=1 when a Person name is given and redirects", async () => {
+      const { owner, tid } = await seedTasks("rf9@example.com", ["Mop"]);
+      const reply = await owner.post("/assign/lists", { name: "A", taskIds: await tid("Mop"), link: "1", person: "Sam" });
+      expect(reply.statusCode).toBe(303);
+    });
   });
 });

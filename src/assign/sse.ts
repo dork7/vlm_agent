@@ -53,8 +53,8 @@ export function registerSse(app: FastifyInstance, ctx: AssignContext) {
     const code = (request.params as { code: string }).code;
     const assignment = await ctx.store.assignments.findOne({ code, active: true });
     if (!assignment) return reply.code(404).send("Link no longer available.");
-    const [list, person] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live })]);
-    if (!list || !person) return reply.code(404).send("Link no longer available.");
+    const [list, person] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }), assignment.personId ? ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live }) : null]);
+    if (!list || (assignment.personId && !person)) return reply.code(404).send("Link no longer available.");
     return stream(ctx, request, reply, assignment.ownerId.toHexString(), assignment.listId.toHexString());
   });
 }

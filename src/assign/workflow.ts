@@ -89,6 +89,7 @@ function addTaskFailure(reply: FastifyReply, form: ReturnType<typeof parseForm>,
   return reply.code(400).type("text/html; charset=utf-8").send(page("Tasks",body,{current:"/assign/tasks"}));
 }
 async function statusChange(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }, status: TaskStatus, note: string, actor?: { name: string; personId: ObjectId }) {
+  if (task.kind === "template") return "Templates have no status. Add one to a List to work on it.";
   if (!textLimit(note, 2000)) return "Note is too long.";
   const allowed = (task.status === "open" && ["blocked","done"].includes(status)) || (task.status === "blocked" && ["open","done"].includes(status)) || (task.status === "done" && status === "open");
   if (!allowed) return "Invalid status transition.";
@@ -157,14 +158,22 @@ async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectI
 }
 const copyOf = (t: TaskDoc & { _id: ObjectId }, listId: ObjectId, at: Date, additional: boolean): TaskDoc => ({ kind: "copy", ownerId: t.ownerId, title: t.title, tags: t.tags, instruction: t.instruction, note: "", status: "open", ...(t.deadline ? { deadline: t.deadline } : {}), listId, templateId: t._id, ...(additional ? { addedToListAt: at } : {}), createdAt: at, updatedAt: at });
 async function addTasks(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }, ids: ObjectId[]) {
-  if (!ids.length || ids.length > 50 || list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
-  const templates = await ctx.store.tasks.find({ ownerId, _id: { $in: ids }, kind: "template", ...live }).toArray();
-  if (templates.length !== ids.length) return "Template not found.";
+  if (!ids.length || ids.length > 50) return "A List holds at most 50 Tasks.";
+  const found = await ctx.store.tasks.find({ ownerId, _id: { $in: ids }, kind: "template", ...live }).toArray();
+  if (found.length !== ids.length) return "Template not found.";
+  // A Template already in this List is not added twice (double-click, repeated drop).
+  const present = new Set((await ctx.store.tasks.find({ ownerId, listId: list._id, templateId: { $in: ids }, ...live }, { projection: { templateId: 1 } }).toArray()).map(c => String(c.templateId)));
+  const templates = found.filter(t => !present.has(String(t._id)));
+  if (!templates.length) return null;
+  ids = templates.map(t => t._id);
+  if (list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
   const now = ctx.now();
   const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" } });
   if (!reserved.modifiedCount) return "A List holds at most 50 Tasks.";
   const copies = ids.map(id => copyOf(templates.find(t => t._id.equals(id))!, list._id, now, !!list.firstAssignedAt));
-  const inserted = await ctx.store.tasks.insertMany(copies);
+  let inserted;
+  try { inserted = await ctx.store.tasks.insertMany(copies); }
+  catch (error) { await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $inc: { taskCount: -ids.length } }); throw error; }
   if (list.status === "active") for (const [index, id] of Object.entries(inserted.insertedIds)) await recordEvent(ctx, ownerId, "list.add", { listId: list._id, taskId: id, fromValue: copies[+index]!.title, summary: `New Task added: ${copies[+index]!.title}` });
   return null;
 }
@@ -240,18 +249,18 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   app.get("/assign/lists", async (_request, reply) => redirect(reply, boardPath()));
   app.post("/assign/lists", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const form = parseForm(request.body), ids = [...new Set(fields(form, "taskIds"))], shareNow = field(form, "link") === "1";
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const form = parseForm(request.body), ids = [...new Set(fields(form, "taskIds"))], wantsLink = field(form, "link") === "1";
     let name = field(form, "name");
     // The select-and-share bar may leave the name blank: pick the first free "List N".
     if (!name && ids.length) { const taken = new Set((await ctx.store.lists.find({ ownerId: owner._id, ...live }, { projection: { name: 1 } }).toArray()).map(l => l.name)); let n = taken.size + 1; while (taken.has(`List ${n}`)) n++; name = `List ${n}`; }
-    if (!name || !textLimit(name, 200) || ids.length > 50 || ids.some(x => !parseId(x))) return fail(reply, 400, "Invalid List.");
+    if (!name || !textLimit(name, 80) || ids.length > 50 || ids.some(x => !parseId(x))) return fail(reply, 400, "Invalid List.");
     const tasks = await ctx.store.tasks.find({ ownerId: owner._id, ...live, _id: { $in: ids.map(x => new ObjectId(x)) } }).toArray();
     if (tasks.length !== ids.length) return fail(reply, 404, "Task not found.");
     if (tasks.some(t => t.kind !== "template")) return fail(reply, 400, "Only Templates can be added to a List.");
     const list = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: ids.length, createdAt: ctx.now() });
     const dropList = async () => { await ctx.store.tasks.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.lists.deleteOne({ _id: list.insertedId, ownerId: owner._id }); };
     const at = ctx.now(); if (tasks.length) await ctx.store.tasks.insertMany(tasks.map(t => copyOf(t, list.insertedId, at, false)));
-    const personName = field(form, "person");
+    const personName = field(form, "person"), shareNow = wantsLink && !personName;
     if (personName) {
       if (!textLimit(personName, 200)) { await dropList(); return fail(reply, 400, "Invalid Person name."); }
       try { await assignList(ctx, owner._id, list.insertedId, personName); }
@@ -310,11 +319,13 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   app.post("/assign/lists/:id/duplicate", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const source = await ctx.store.tasks.find({ ownerId: owner._id, listId: list._id, kind: "copy", ...live }).sort({ createdAt: 1 }).toArray(), at = ctx.now(), name = `${list.name} (copy)`;
-    const made = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: source.length, createdAt: at });
+    const source = (await ctx.store.tasks.find({ ownerId: owner._id, listId: list._id, kind: "copy", ...live }).sort({ createdAt: 1 }).limit(50).toArray()), at = ctx.now(), name = `${list.name.slice(0, 80 - " (copy)".length)} (copy)`;
+    const made = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: 0, createdAt: at });
+    let created = 0;
     try {
-      if (source.length) await ctx.store.tasks.insertMany(source.map((c, i) => ({ kind: "copy" as const, ownerId: owner._id, title: c.title, tags: c.tags, instruction: c.instruction, note: "", status: "open" as const, ...(c.deadline ? { deadline: c.deadline } : {}), listId: made.insertedId, ...(c.templateId ? { templateId: c.templateId } : {}), createdAt: new Date(at.getTime() + i), updatedAt: at })));
-      await ensureLink(ctx, owner._id, { ownerId: owner._id, name, status: "draft", taskCount: source.length, createdAt: at, _id: made.insertedId });
+      if (source.length) created = (await ctx.store.tasks.insertMany(source.map((c, i) => ({ kind: "copy" as const, ownerId: owner._id, title: c.title, tags: c.tags, instruction: c.instruction, note: "", status: "open" as const, ...(c.deadline ? { deadline: c.deadline } : {}), listId: made.insertedId, ...(c.templateId ? { templateId: c.templateId } : {}), createdAt: new Date(at.getTime() + i), updatedAt: at })))).insertedCount;
+      await ctx.store.lists.updateOne({ _id: made.insertedId, ownerId: owner._id }, { $set: { taskCount: created } });
+      await ensureLink(ctx, owner._id, { ownerId: owner._id, name, status: "draft", taskCount: created, createdAt: at, _id: made.insertedId });
     } catch { await ctx.store.tasks.deleteMany({ ownerId: owner._id, listId: made.insertedId }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: made.insertedId }); await ctx.store.lists.deleteOne({ _id: made.insertedId, ownerId: owner._id }); return fail(reply, 500, "Could not duplicate List."); }
     await recordEvent(ctx, owner._id, "list.create", { listId: made.insertedId, toValue: name });
     return redirect(reply, `/assign/tasks?rename=${made.insertedId}#list-${made.insertedId}`);
@@ -366,6 +377,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
       if (!person) return fail(reply, 500, "Could not save name.");
       const bound = await ctx.store.assignments.updateOne({ _id: assignment._id, active: true, personId: { $exists: false } }, { $set: { personId: person._id } });
       if (!bound.modifiedCount && created) await ctx.store.people.deleteOne({ _id: person._id, ownerId: assignment.ownerId });
+      if (bound.modifiedCount) { const list = await ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }); await recordEvent(ctx, assignment.ownerId, "assignment.claim", { listId: assignment.listId, personId: person._id, summary: `${person.name} claimed ${list?.name || "a List"}` }); }
     }
     return redirect(reply, `/l/${code}`);
   });
@@ -400,7 +412,8 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
       return `<section><h2>${esc(p.name)}</h2>${cards || `<p class="empty">${filtered ? "Nothing matches these filters." : "No active Lists."}</p>`}</section>`;
     }).join("");
     const awaiting = query.person || filtered ? "" : assignments.filter(a => !a.personId).map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); return `<article><a href="${boardPath(a.listId)}">${esc(list?.name)}</a> · <span class="badge">Awaiting name</span> · ${all.length} Tasks</article>`; }).join("");
-    const unassigned = query.person ? [] : tasks.filter(t => !t.listId && shown(t));
+    const used = new Set(tasks.filter(t => t.kind === "copy" && t.templateId).map(t => String(t.templateId)));
+    const unassigned = query.person ? [] : tasks.filter(t => t.kind === "template" && !used.has(String(t._id)) && shown(t));
     const drafts = query.person ? [] : lists.filter(l => l.status === "draft" && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(l._id) && shown(t))));
     const option = (value: string, label: string, current?: string) => `<option value="${esc(value)}"${value === (current || "") ? " selected" : ""}>${esc(label)}</option>`;
     const filters = `<form class="filters" role="search" aria-label="Filter the Board"><div class="field"><label for="filter-person">Person</label><select id="filter-person" name="person">${option("", "All people", query.person)}${people.map(p => option(p._id.toHexString(), p.name, query.person)).join("")}</select></div><div class="field"><label for="filter-tag">Tag</label><input id="filter-tag" name="tag" value="${esc(query.tag || "")}"></div><div class="field"><label for="filter-status">Status</label><select id="filter-status" name="status">${option("", "All statuses", query.status)}${STATUSES.map(s => option(s, statusLabel[s], query.status)).join("")}</select></div><div class="actions"><button>Filter</button>${filtered ? '<a href="/assign">Clear filters</a>' : ""}</div></form>`;
@@ -417,6 +430,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
       const list = lists.find(l => l._id.equals(event.listId || new ObjectId()))?.name || "List";
       const person = people.find(p => p._id.equals(event.personId || new ObjectId()))?.name || "Someone";
       if (event.kind === "assignment.opened") return `${person} opened ${list}`;
+      if (event.kind === "assignment.claim") return `${person} claimed ${list}`;
       if (event.kind === "list.complete") return `${list} complete`;
       if (event.kind === "task.status") return `${task}: ${event.toValue}`;
       if (event.kind === "task.create") return `Created ${task}`;
