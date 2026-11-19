@@ -160,7 +160,7 @@
   <div class="header-inner">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Voice Notes Bot</div>
     <nav aria-label="Main navigation">
-      <% for (const [section, label] of [["tasks", "Tasks"], ["notes", "Notes"], ...(locals.voicePage ? [["voice", "Voice"]] : []), ...(locals.viewer?.isAdmin ? [["runs", "Runs"], ["users", "Users"]] : [])]) { %>
+      <% for (const [section, label] of [["tasks", "Tasks"], ["notes", "Notes"], ["realtime", "Talk"], ...(locals.voicePage ? [["voice", "Voice"]] : []), ...(locals.viewer?.isAdmin ? [["runs", "Runs"], ["users", "Users"]] : [])]) { %>
         <a href="/<%= section %>"<% if (locals.activeSection === section) { %> aria-current="page"<% } %>><%= label %></a>
       <% } %>
       <button type="button" class="theme-toggle" id="theme-toggle">Theme: Auto</button>

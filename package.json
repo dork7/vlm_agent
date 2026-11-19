@@ -16,6 +16,7 @@
     "test:slow": "SLOW_TESTS=1 vitest run slow.test"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.3.7",
     "@livekit/agents": "^1.9.5",
     "@livekit/agents-plugin-openai": "^1.9.5",
     "@livekit/agents-plugin-silero": "^1.9.5",
@@ -30,6 +31,7 @@
   "devDependencies": {
     "@types/ejs": "^3.1.5",
     "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
     "mongodb-memory-server": "^11.3.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
