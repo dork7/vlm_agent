@@ -354,6 +354,9 @@
   .list-row > summary::before { content: "\25B8"; position: absolute; left: .8rem; top: .6rem; color: var(--accent); }
   .list-row[open] > summary::before { content: "\25BE"; }
   .list-row .summary-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; min-height: 1.6rem; }
+  .list-row .rename-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; }
+  .list-row form.rename-inline { flex: 1 1 8rem; margin: 0; }
+  .list-row form.rename-inline input { width: 100%; margin: 0; }
   .list-row .list-name { flex: 1 1 8rem; min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
   .list-row progress { width: 5.5rem; height: .45rem; accent-color: var(--success); }
   .list-row .count { color: var(--muted); font-size: .875rem; font-weight: 400; white-space: nowrap; }
