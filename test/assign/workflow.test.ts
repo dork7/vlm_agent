@@ -421,6 +421,42 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/add`, { taskId: later._id.toHexString() });
     expect((await store.lists.findOne({ _id: list._id }))!.removedTasks || []).toHaveLength(0);
   });
+  it("creates one link with no Person, asks for a name on first open only, and shows it on the Board", async () => {
+    const { owner, store, id } = await seedTasks("nameless@example.com", ["Water plants"]);
+    await owner.post("/assign/lists", { name: "Chores", taskIds: [await id("Water plants")] });
+    const list = (await store.lists.findOne({ name: "Chores" }))!;
+    const first = await owner.post(`/assign/lists/${list._id}/link`);
+    expect(first.statusCode).toBe(200);
+    const url = (first.json() as { url: string }).url;
+    expect(url).toMatch(/^http:\/\/assign\.test\/l\/[A-Za-z0-9]{10}$/);
+    const again = await owner.post(`/assign/lists/${list._id}/link`);
+    expect((again.json() as { url: string }).url).toBe(url);
+    expect(await store.assignments.countDocuments({ listId: list._id })).toBe(1);
+    expect(await store.people.countDocuments({})).toBe(0);
+    expect((await owner.get("/assign")).body).toContain("Awaiting name");
+    expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("Copy link");
+    const path = new URL(url).pathname;
+    const firstOpen = await app.inject({ method: "GET", url: path });
+    expect(firstOpen.body).toContain('name="person"'); expect(firstOpen.body).not.toContain("Water plants");
+    expect((await postForm(`${path}/name`, { person: "   " })).statusCode).toBe(400);
+    expect((await postForm(`${path}/name`, { person: "Sam" })).statusCode).toBe(303);
+    const laterOpen = await app.inject({ method: "GET", url: path, headers: { "user-agent": "another device" } });
+    expect(laterOpen.body).toContain("Water plants"); expect(laterOpen.body).not.toContain('name="person"');
+    const second = await postForm(`${path}/name`, { person: "Mallory" });
+    expect(second.statusCode).toBe(303); expect(await store.people.countDocuments({})).toBe(1);
+    const board = (await owner.get("/assign")).body;
+    expect(board).toContain("Sam"); expect(board).not.toContain("Awaiting name"); expect(board).not.toContain("Mallory");
+  });
+  it("replaces an unassigned link through Reassign", async () => {
+    const owner = browser(); await owner.login("reassign@example.com");
+    await owner.post("/assign/lists", { name: "Open" });
+    const store = await openAssignStore(db), list = (await store.lists.findOne({ name: "Open" }))!;
+    const oldPath = new URL(((await owner.post(`/assign/lists/${list._id}/link`)).json() as { url: string }).url).pathname;
+    await owner.post(`/assign/lists/${list._id}/assign`, { person: "Zed" });
+    expect((await app.inject({ method: "GET", url: oldPath })).body).toContain("replaced by a newer one");
+    const newer = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+    expect(`/l/${newer.code}`).not.toBe(oldPath); expect(newer.personId).toBeDefined();
+  });
   it("distinguishes replaced and revoked links, including stale posts", async () => {
     const owner = browser(); await owner.login("links@example.com");
     await owner.post("/assign/lists", { name: "Private" });
