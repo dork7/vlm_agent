@@ -14,11 +14,18 @@ const completeEnv = {
 
 describe("startup configuration", () => {
   it("fails naming every missing required environment variable", () => {
-    const { MONGODB_URI, ADMIN_PASSWORD, ...env } = completeEnv;
+    const { MONGODB_URI, INVENTORY_API_KEY, ...env } = completeEnv;
 
     expect(() => loadConfig(env)).toThrow(
-      "Missing required environment variables: MONGODB_URI, ADMIN_PASSWORD",
+      "Missing required environment variables: MONGODB_URI, INVENTORY_API_KEY",
     );
+  });
+
+  it("falls back to the default admin username and password when unset or blank", () => {
+    const { ADMIN_USERNAME, ADMIN_PASSWORD, ...env } = completeEnv;
+
+    expect(loadConfig(env).firstAdmin).toEqual({ username: "admin", password: "changeme", telegramId: "42" });
+    expect(loadConfig({ ...completeEnv, ADMIN_PASSWORD: " " }).firstAdmin.password).toBe("changeme");
   });
 
   it("treats a blank value as missing", () => {

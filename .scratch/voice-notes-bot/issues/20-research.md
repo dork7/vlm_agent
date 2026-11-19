@@ -1,4 +1,4 @@
-# 15: Research
+# 20: Research
 
 **What to build:** A User types or says something like "find out the VAT rate on exports" or "what did I note about the supplier?" and the bot looks it up and replies with a short answer and its sources, instead of saving a Note or Task. The classifier gains one more outcome, Research, carrying the question and whether the web is needed. The core searches the User's own Notes and Tasks by the question's words, then asks a model for the answer: through OpenRouter's web search plugin when the web is needed (OpenRouter models only), from the matches alone otherwise. The core emits a channel-neutral result carrying the answer, the web sources and the Headings of the User's items it used; the Telegram adapter formats it as one message. The Run takes the type `research`, with a `research` stage. See spec story 80 and **Research**.
 

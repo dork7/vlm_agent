@@ -1,13 +1,16 @@
 <%- include("header", { title: "Runs" }) %>
-<h1>Runs</h1>
+<%- include("page-heading", { title: "Runs", description: "Follow each message from input to outcome.", count: runs.length, countLabel: "recent runs" }) %>
 <p><a href="/runs/totals">Totals</a></p>
 <% if (awaiting > 0) { %>
   <p><span class="status status-awaiting-clarification"><%= awaiting %> <%= awaiting === 1 ? "Run" : "Runs" %> awaiting a Clarification</span></p>
 <% } %>
 <% if (runs.length === 0) { %>
-  <p>No Runs yet.</p>
+  <%- include("empty-state", {
+    message: "No Runs yet.", hint: "Message processing activity will appear here.",
+    href: "/runs/totals", action: "View run totals"
+  }) %>
 <% } else { %>
-  <table class="runs">
+  <div class="table-scroll" role="region" aria-label="Run data" tabindex="0"><table class="runs">
     <thead>
       <tr><th>Started</th><th>Sender</th><th>Outcome</th><th>Type</th><th>Total time</th></tr>
     </thead>
@@ -22,6 +25,6 @@
       </tr>
     <% } %>
     </tbody>
-  </table>
+  </table></div>
 <% } %>
 <%- include("footer") %>

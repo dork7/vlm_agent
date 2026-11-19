@@ -3,38 +3,38 @@
 <h1>Run totals</h1>
 
 <h2>Health</h2>
-<table>
+<div class="table-scroll" role="region" aria-label="Run data" tabindex="0"><table>
   <tr><th>Failure rate</th><td><%= share(failed, finished) %></td></tr>
   <tr><th>Fallback</th><td><%= share(fellBack, usedModel) %></td></tr>
-</table>
+</table></div>
 <p class="meta">Failure rate counts finished Runs. Fallback counts Runs that called a model, where a model failed and the next in the list was tried.</p>
 
 <h2>By type</h2>
-<table>
+<div class="table-scroll" role="region" aria-label="Run data" tabindex="0"><table>
 <% for (const [type, label] of types) { %>
   <tr><th><%= label %></th><td><%= byType[type] ?? 0 %></td></tr>
 <% } %>
-</table>
+</table></div>
 
 <h2>Average time per stage</h2>
 <% if (averageStageMs.length === 0) { %>
   <p>No stages recorded yet.</p>
 <% } else { %>
-  <table>
+  <div class="table-scroll" role="region" aria-label="Run data" tabindex="0"><table>
   <% for (const stage of averageStageMs) { %>
     <tr><th><%= stage.name %></th><td><%= duration(stage.averageMs) %></td></tr>
   <% } %>
-  </table>
+  </table></div>
 <% } %>
 
 <h2>Messages per day</h2>
 <% if (perDay.length === 0) { %>
   <p>No messages yet.</p>
 <% } else { %>
-  <table>
+  <div class="table-scroll" role="region" aria-label="Run data" tabindex="0"><table>
   <% for (const { date, count } of perDay) { %>
     <tr><th><%= day(date) %></th><td><%= count %></td></tr>
   <% } %>
-  </table>
+  </table></div>
 <% } %>
 <%- include("footer") %>
