@@ -2,11 +2,16 @@ import type { Collection, Db, ObjectId } from "mongodb";
 export type OwnerDoc = { email: string; createdAt: Date; lastSeenEventId: number; passwordHash?: string; offeredPassword?: boolean };
 export type LoginTokenDoc = { email: string; tokenHash: string; expiresAt: Date; usedAt?: Date };
 export type RefreshTokenDoc = { ownerId: ObjectId; tokenHash: string; expiresAt: Date; revokedAt?: Date; rotatedAt?: Date; family: string };
+export type DeleteReason = "removed" | "template-deleted" | "list-deleted" | "person-deleted";
+type Retained = { deletedAt?: Date; deleteReason?: DeleteReason };
+// Merge into every query that reads Tasks, Lists or People for a page, count, Board entry or stream.
+export const live = { deletedAt: { $exists: false } } as const;
 export type TaskStatus = "open" | "blocked" | "done";
-export type TaskDoc = { ownerId: ObjectId; title: string; tags: string[]; instruction: string; note: string; status: TaskStatus; listId?: ObjectId; addedToListAt?: Date; deadline?: Date; createdAt: Date; updatedAt: Date };
-export type ListDoc = { ownerId: ObjectId; name: string; status: "draft" | "active"; taskCount: number; createdAt: Date; completedAt?: Date; firstAssignedAt?: Date; removedTasks?: { taskId: ObjectId; title: string; removedAt: Date }[] };
-export type PersonDoc = { ownerId: ObjectId; name: string; nameLower: string };
-export type AssignmentDoc = { ownerId: ObjectId; listId: ObjectId; personId: ObjectId; code: string; active: boolean; revokedAt?: Date; replacedAt?: Date; firstViewedAt?: Date; lastViewedAt?: Date; viewCount: number };
+export type TaskKind = "template" | "copy";
+export type TaskDoc = { kind: TaskKind; ownerId: ObjectId; title: string; tags: string[]; instruction: string; note: string; status: TaskStatus; listId?: ObjectId; templateId?: ObjectId; addedToListAt?: Date; deadline?: Date; createdAt: Date; updatedAt: Date; doneAt?: Date } & Retained;
+export type ListDoc = { ownerId: ObjectId; name: string; status: "draft" | "active"; taskCount: number; createdAt: Date; completedAt?: Date; firstAssignedAt?: Date; removedTasks?: { taskId: ObjectId; title: string; removedAt: Date }[] } & Retained;
+export type PersonDoc = { ownerId: ObjectId; name: string; nameLower: string } & Retained;
+export type AssignmentDoc = { ownerId: ObjectId; listId: ObjectId; personId?: ObjectId; code: string; active: boolean; revokedAt?: Date; replacedAt?: Date; firstViewedAt?: Date; lastViewedAt?: Date; viewCount: number };
 export type ViewDoc = { ownerId: ObjectId; assignmentId: ObjectId; viewedAt: Date; userAgent: string; browser: string; deviceType: string; counted: boolean };
 export type EventKind = string;
 export type EventDoc = { ownerId: ObjectId; seq: number; kind: EventKind; createdAt: Date; listId?: ObjectId; taskId?: ObjectId; personId?: ObjectId; fromValue?: string; toValue?: string; summary?: string };
@@ -20,5 +25,7 @@ export async function openAssignStore(db: Db): Promise<AssignStore> {
     const note = String(task.note || "");
     await legacy.updateOne({ _id: task._id, blockedReason: { $exists: true } }, { $set: { note: reason && note ? `${reason}\n\n${note}` : reason || note }, $unset: { blockedReason: "" } });
   }
+  await legacy.updateMany({ kind: { $exists: false }, listId: { $exists: true } }, { $set: { kind: "copy" } });
+  await legacy.updateMany({ kind: { $exists: false } }, { $set: { kind: "template" } });
   return store;
 }

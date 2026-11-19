@@ -326,6 +326,71 @@
   dialog { max-width: min(38rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto; border: 1px solid var(--border); border-radius: .85rem; background: var(--surface-1); color: var(--text); padding: 1.4rem; }
   dialog::backdrop { background: rgb(0 0 0 / 65%); }
   @media (max-width: 48rem) { .tasks-layout { display: block; } .list-sidebar { margin-bottom: 1rem; } }
+  /* Single-page board: Templates on the left, Lists on the right. Stacks to one column at 900px and below. */
+  .board-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 1.5rem; align-items: start; }
+  .board-layout > * { min-width: 0; }
+  .board-layout > section { margin: 0; }
+  .lists-panel { position: sticky; top: .75rem; max-height: calc(100vh - 1.5rem); overflow: auto; padding-right: .25rem; }
+  .lists-panel h2, .templates-panel h2 { margin-top: 0; }
+  .quick-add, .new-list { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 0 0 1rem; }
+  .quick-add > input, .new-list > input { flex: 1 1 12rem; width: auto; margin: 0; font-size: 1rem; }
+  .quick-add > button, .new-list > button { margin: 0; }
+  .quick-add .more-fields { flex: 1 1 100%; margin: 0; padding: .5rem .8rem; }
+  .tpl-list, .copy-list { list-style: none; margin: 0; padding: 0; }
+  .tpl-row, .copy-item { display: flex; align-items: center; gap: .5rem; }
+  .tpl-row { margin: 0 0 .45rem; padding: .35rem .7rem; border: 1px solid var(--border); border-radius: .7rem; background: var(--surface-1); }
+  .tpl-row:has(input:checked) { background: var(--accent-surface); border-color: var(--accent-border); }
+  .tpl-main, .copy-main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .tpl-row .in-lists { white-space: nowrap; }
+  .pick { display: inline-flex; align-items: center; justify-content: center; min-width: 2.75rem; min-height: 2.75rem; margin: 0; }
+  .pick input { width: 1.4rem; height: 1.4rem; margin: 0; }
+  .select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 1rem 0 0; padding: .6rem .8rem; border: 1px solid var(--border-strong); border-radius: .8rem; background: var(--surface-2); position: sticky; bottom: .75rem; }
+  .select-bar[hidden] { display: none; }
+  .select-bar input { flex: 1 1 9rem; width: auto; margin: 0; }
+  .select-bar .sel-count { font-weight: 600; }
+  .select-bar select { flex: 1 1 8rem; width: auto; margin: 0; font-size: 1rem; }
+  .select-bar button { margin: 0; }
+  .touch-hint { display: none; padding: .6rem .9rem; margin: 0 0 1rem; border-radius: .6rem; background: var(--accent-surface); }
+  .list-row { display: block; margin: 0 0 .6rem; padding: 0; overflow: hidden; }
+  .list-row > summary { display: block; position: relative; min-height: 2.75rem; padding: .6rem .9rem .6rem 2rem; list-style: none; }
+  .list-row > summary::-webkit-details-marker { display: none; }
+  .list-row > summary::before { content: "\25B8"; position: absolute; left: .8rem; top: .6rem; color: var(--accent); }
+  .list-row[open] > summary::before { content: "\25BE"; }
+  .list-row .summary-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; min-height: 1.6rem; }
+  .list-row .rename-link { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; min-width: 2rem; min-height: 2rem; }
+  .list-row form.rename-inline { flex: 1 1 8rem; margin: 0; }
+  .list-row form.rename-inline input { width: 100%; margin: 0; }
+  .list-row .list-name { flex: 1 1 8rem; min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
+  .list-row progress { width: 5.5rem; height: .45rem; accent-color: var(--success); }
+  .list-row .count { color: var(--muted); font-size: .875rem; font-weight: 400; white-space: nowrap; }
+  .pill { padding: 0 .65rem; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: .8rem; font-weight: 600; line-height: 1.6; }
+  .pill.wait { background: var(--warning-surface); color: var(--warning); }
+  .pill.ok { background: var(--success-surface); color: var(--success); }
+  .list-body { padding: 0 .9rem .9rem; border-top: 1px solid var(--border); }
+  .list-body h3 { margin: 1rem 0 .4rem; font-size: 1rem; }
+  .list-body .copy-item { margin: 0; }
+  .copy-item { padding: .1rem 0; }
+  .copy-item form { margin: 0; }
+  .copy-item.done .copy-main a { color: var(--muted); text-decoration: line-through; }
+  .copy-item button.check, .copy-item button.ghost { display: inline-flex; align-items: center; justify-content: center; min-width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0; font-size: 1.25rem; }
+  .copy-item button.ghost { background: none; border-color: transparent; color: var(--muted); }
+  .copy-item button.check { background: none; border-color: transparent; color: var(--accent); }
+  [data-drag-template], [data-drag-copy] { cursor: grab; }
+  .dragging-template [data-drop-list], .dragging-copy [data-drop-templates] { outline: 2px dashed var(--accent-border); outline-offset: 2px; }
+  .drop-over { outline: 2px solid var(--accent) !important; background: var(--accent-surface); }
+  @media (max-width: 900px) {
+    .board-layout { grid-template-columns: 1fr; }
+    .lists-panel { position: static; max-height: none; overflow: visible; padding-right: 0; }
+    .select-bar { position: fixed; left: 0; right: 0; bottom: 0; margin: 0; z-index: 20; border-radius: .8rem .8rem 0 0; border-width: 1px 0 0; padding-bottom: calc(.6rem + env(safe-area-inset-bottom, 0px)); }
+    .board-layout { padding-bottom: 9rem; }
+  }
+  @media (hover: none), (max-width: 900px) {
+    .touch-hint { display: block; }
+    .board-layout :is(input:not([type="checkbox"]), select, textarea) { font-size: 16px; min-height: 2.75rem; }
+    .board-layout :is(button, summary) { min-height: 2.75rem; }
+    .board-layout .list-body a { display: inline-block; padding: .7rem 0; }
+    .board-layout .tpl-main a { display: inline-block; padding: .55rem 0; }
+  }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; } }
 </style>
 <script>

@@ -7,13 +7,14 @@ import type { AssignContext } from "./context.ts";
 import { currentOwner } from "./auth.ts";
 import { field, fields, parseForm, parseId } from "./http.ts";
 import { recordEvent } from "./events.ts";
-import type { AssignmentDoc, ListDoc, OwnerDoc, PersonDoc, TaskDoc, TaskStatus } from "./store.ts";
+import { live, type AssignmentDoc, type ListDoc, type OwnerDoc, type PersonDoc, type TaskDoc, type TaskStatus } from "./store.ts";
 
 type Params = { id: string; code: string };
 const esc = (x: unknown) => ejs.escapeXML(String(x ?? ""));
 const themeMarkup = readFileSync(new URL("./views/theme.ejs", import.meta.url), "utf8");
 const navMarkup = ejs.compile(readFileSync(new URL("./views/nav.ejs", import.meta.url), "utf8"));
-const taskViewScript = readFileSync(new URL("./views/task-view.ejs", import.meta.url), "utf8");
+// Progressive enhancement for the board: remembers which Lists are expanded, and creates + copies a List link without leaving the page.
+const boardScript = `<script>(()=>{const key='ta_open_lists';const read=()=>{try{return new Set(JSON.parse(sessionStorage.getItem(key)||'[]'))}catch{return new Set()}};const open=read();for(const d of document.querySelectorAll('details.list-row')){if(open.has(d.id))d.open=true;d.addEventListener('toggle',()=>{try{const s=read();d.open?s.add(d.id):s.delete(d.id);sessionStorage.setItem(key,JSON.stringify([...s]))}catch{}})}let drag=null;const ticked=id=>{const all=[...document.querySelectorAll('input[name=taskIds]:checked')].map(i=>i.value);return all.includes(id)?all:[id]};document.addEventListener('dragstart',e=>{const t=e.target instanceof Element&&e.target.closest('[data-drag-template],[data-drag-copy]');if(!t)return;drag=t.dataset.dragTemplate?{ids:ticked(t.dataset.dragTemplate)}:{copy:t.dataset.dragCopy,url:t.dataset.removeUrl};e.dataTransfer.effectAllowed='copy';e.dataTransfer.setData('text/plain',t.textContent.trim());document.body.classList.add(drag.ids?'dragging-template':'dragging-copy')});const clear=()=>{drag=null;document.body.classList.remove('dragging-template','dragging-copy');for(const x of document.querySelectorAll('.drop-over'))x.classList.remove('drop-over')};document.addEventListener('dragend',clear);const target=e=>{if(!drag||!(e.target instanceof Element))return null;return drag.ids?e.target.closest('[data-drop-list]'):e.target.closest('[data-drop-templates]')};document.addEventListener('dragover',e=>{const z=target(e);for(const x of document.querySelectorAll('.drop-over'))if(x!==z)x.classList.remove('drop-over');if(!z)return;e.preventDefault();z.classList.add('drop-over')});document.addEventListener('drop',async e=>{const z=target(e);if(!z)return;e.preventDefault();const d=drag;clear();const token=document.querySelector('input[name=csrf]');const body=new URLSearchParams();let url;if(d.ids){url=z.dataset.addUrl;for(const id of d.ids)body.append('taskIds',id);try{const s=read();s.add(z.id);sessionStorage.setItem(key,JSON.stringify([...s]))}catch{}}else{url=d.url;body.set('taskId',d.copy)}try{const r=await fetch(url,{method:'POST',headers:{'x-csrf-token':token?token.value:'','content-type':'application/x-www-form-urlencoded'},body});if(!r.ok)throw new Error('failed')}catch{try{sessionStorage.setItem('ta_alert','Could not move that Task. Try again.')}catch{}}location.reload()});const bar=document.getElementById('select-tasks');if(bar){const boxes=()=>[...document.querySelectorAll('input[name=taskIds]')],sync=()=>{const n=boxes().filter(c=>c.checked).length;bar.hidden=!n;bar.querySelector('[data-sel-count]').textContent=n;bar.elements.name.disabled=!n;const a=bar.querySelector('[data-add-existing]');if(a)a.disabled=!n||!bar.elements.listId.value};document.addEventListener('change',e=>{if(e.target.matches('input[name=taskIds], #add-target'))sync()});bar.querySelector('[data-clear-selection]').addEventListener('click',()=>{for(const c of boxes())c.checked=false;sync()});bar.querySelector('[data-create-share]').addEventListener('click',async e=>{const b=e.currentTarget,out=bar.querySelector('[data-share-status]'),token=document.querySelector('input[name=csrf]'),body=new URLSearchParams();for(const c of boxes())if(c.checked)body.append('taskIds',c.value);body.set('name',bar.elements.name.value);body.set('link','1');b.disabled=true;try{const r=await fetch('/assign/lists',{method:'POST',headers:{'x-csrf-token':token?token.value:'','content-type':'application/x-www-form-urlencoded'},body});if(!r.ok)throw new Error('failed');const {url,listId,name}=await r.json();let note='List \u201c'+name+'\u201d created. Use Copy link to copy it.';try{await navigator.clipboard.writeText(url);note='List \u201c'+name+'\u201d created and link copied.'}catch{}try{sessionStorage.setItem('ta_alert',note)}catch{}location.href='/assign/tasks?list='+listId+'#list-'+listId}catch{b.disabled=false;if(out)out.textContent='Could not create the list. Try again.'}});bar.hidden=true;sync()}const startRename=d=>{const n=d.querySelector('.list-name');if(!n||d.querySelector('form.rename-inline'))return;const token=document.querySelector('input[name=csrf]'),old=n.textContent,f=document.createElement('form');f.className='rename-inline';f.method='post';f.action='/assign/lists/'+d.id.slice(5)+'/edit';if(token){const c=document.createElement('input');c.type='hidden';c.name='csrf';c.value=token.value;f.append(c)}const i=document.createElement('input');i.name='name';i.value=old;i.maxLength=80;i.setAttribute('aria-label','List name');f.append(i);let done=false;const cancel=()=>{if(done)return;done=true;f.replaceWith(n);n.hidden=false};const save=()=>{if(done)return;const v=i.value.trim();if(!v||v===old){cancel();return}done=true;f.requestSubmit()};i.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();cancel()}else if(e.key==='Enter'){e.preventDefault();save()}});i.addEventListener('blur',save);for(const t of ['click','keyup'])f.addEventListener(t,e=>{e.stopPropagation();if(t==='click'||e.key===' ')e.preventDefault()});n.hidden=true;n.after(f);i.focus();i.select()};window.startListRename=id=>{const d=document.getElementById('list-'+id);if(d){d.open=true;startRename(d)}};document.addEventListener('click',e=>{const t=e.target instanceof Element&&e.target.closest('[data-rename-link]');if(!t)return;e.preventDefault();e.stopPropagation();startRename(t.closest('details'))});document.addEventListener('dblclick',e=>{const t=e.target instanceof Element&&e.target.closest('.list-name');if(t)startRename(t.closest('details'))});const asked=document.querySelector('details[data-rename]');if(asked)startRename(asked);document.addEventListener('click',async e=>{const b=e.target instanceof Element&&e.target.closest('[data-create-link]');if(!b)return;const out=b.parentElement.querySelector('[role=status]'),token=document.querySelector('input[name=csrf]');b.disabled=true;try{const r=await fetch(b.dataset.createLink,{method:'POST',headers:{'x-csrf-token':token?token.value:''}});if(!r.ok)throw new Error('failed');const {url}=await r.json();let note='Link created. Use Copy link to copy it.';try{await navigator.clipboard.writeText(url);note='Link created and copied.'}catch{}try{sessionStorage.setItem('ta_alert',note)}catch{}location.reload()}catch{b.disabled=false;if(out)out.textContent='Could not create the link. Try again.'}})})()</script>`;
 type PageOptions = { live?: string; assignee?: boolean; current?: string; noLogin?: boolean };
 // Live pages reload on change, unless the person has started typing: then they get a notice instead of losing their input.
 const liveScript = (live: string) => `<script>(()=>{const main=document.getElementById('main');const notice=(role,text)=>{const n=document.createElement('aside');n.setAttribute('role',role);n.textContent=text;main.prepend(n);return n};const alertText=sessionStorage.getItem('ta_alert');if(alertText){notice('alert',alertText);sessionStorage.removeItem('ta_alert')}let dirty=false,leaving=false;document.addEventListener('input',e=>{if(e.target.form)dirty=true});document.addEventListener('submit',e=>{const method=(e.submitter&&e.submitter.getAttribute('formmethod'))||e.target.getAttribute('method');if(method!=='dialog')leaving=true});addEventListener('beforeunload',()=>{leaving=true});const refresh=text=>{if(leaving)return;if(!dirty){location.reload();return}if(document.getElementById('ta-stale'))return;const n=notice('status',(text||'This page has updates.')+' ');n.id='ta-stale';const b=document.createElement('button');b.type='button';b.textContent='Reload to see them';b.addEventListener('click',()=>location.reload());n.append(b)};const stream=new EventSource(${JSON.stringify(live)});stream.addEventListener('change',e=>{const event=JSON.parse(e.data);if(event.kind==='list.add'||event.kind==='list.remove'){if(location.pathname.startsWith('/l/'))sessionStorage.setItem('ta_alert',event.summary||'List updated');refresh(event.summary);return}if(location.pathname==='/assign'&&['task.status','assignment.opened'].includes(event.kind))sessionStorage.setItem('ta_alert',event.summary||'Activity updated');refresh(event.summary)});stream.addEventListener('reset',()=>refresh());stream.addEventListener('revoked',()=>{if(!leaving)location.reload()})})()</script>`;
@@ -44,10 +45,10 @@ const timeTag = (at: Date) => `<time datetime="${at.toISOString()}">${at.toISOSt
 const deadlineTag = (task: TaskDoc, now: Date) => task.deadline ? `<span class="deadline${task.status !== "done" && task.deadline < now ? " overdue" : ""}">Deadline <time data-absolute datetime="${task.deadline.toISOString()}">${task.deadline.toISOString()}</time>${task.status !== "done" && task.deadline < now ? " · Overdue" : ""}</span>` : "";
 const overdueTag = (task: TaskDoc, now: Date) => task.deadline && task.status !== "done" && task.deadline < now ? ' <span class="badge overdue">Overdue</span>' : "";
 const additionalTag = (task: TaskDoc, list?: ListDoc | null) => list?.firstAssignedAt && task.addedToListAt && task.addedToListAt >= list.firstAssignedAt ? ' <span class="badge">Additional task</span>' : "";
-const statusForm = (action: string, task: TaskDoc & { _id: ObjectId }) => `<form method="post" action="${action}" class="status-actions">${task.status === "open" ? `<button name="status" value="blocked" data-block>Blocked</button><button name="status" value="done">Done</button>` : task.status === "blocked" ? `<button name="status" value="done">Done</button><button name="status" value="open">Reopen</button>` : `<button name="status" value="open">Reopen</button>`}<div data-block-note hidden><label for="block-note-${task._id}">Note</label><small class="hint">Say what's blocking you here, if anything.</small><textarea id="block-note-${task._id}" name="note" maxlength="2000">${esc(task.note)}</textarea><button name="status" value="blocked">Save Blocked</button></div></form>`;
-const taskDisclosure = (task: TaskDoc & { _id: ObjectId }, action: string, now: Date, list?: ListDoc | null, owner = false, noteAction?: string) => `<article class="task-row"><div class="task-heading">${owner ? task.listId ? `<label><input type="checkbox" disabled>Select ${esc(task.title)} <span class="hint">(already in ${esc(list?.name || "a List")})</span></label> <a class="hint" href="/assign/lists/${task.listId}">Open List</a>` : `<label><input type="checkbox" name="taskIds" value="${task._id}" form="select-tasks">Select ${esc(task.title)}</label>` : ""}<details><summary>${owner ? `<a href="/assign/tasks/${task._id}">${esc(task.title)}</a> ${badge(task.status)}` : esc(task.title)}${additionalTag(task,list)}${overdueTag(task,now)}</summary><div>${task.instruction ? `<p class="instruction">${esc(task.instruction)}</p>` : ""}${task.tags.length ? `<p>Tags: ${task.tags.map(esc).join(", ")}</p>` : ""}${deadlineTag(task,now)}${noteAction ? noteForm(noteAction, task, "Say what's blocking you here, if anything.") : task.note ? `<p>Note: ${esc(task.note)}</p>` : ""}</div></details>${statusForm(action,task)}</div></article>`;
+const statusForm = (action: string, task: TaskDoc & { _id: ObjectId }, ownerNote?: { noteAction: string; hint: string }) => `<form method="post" action="${action}" class="status-actions">${task.status === "open" ? `<button name="status" value="blocked"${ownerNote ? "" : " data-block"}>Blocked</button><button name="status" value="done">Done</button>` : task.status === "blocked" ? `<button name="status" value="done">Done</button><button name="status" value="open">Reopen</button>` : `<button name="status" value="open">Reopen</button>`}${ownerNote ? `<div class="field"><label for="note-${task._id}">Note</label><small class="hint" id="note-${task._id}-hint">${ownerNote.hint}</small><textarea id="note-${task._id}" name="note" maxlength="2000" aria-describedby="note-${task._id}-hint">${esc(task.note)}</textarea></div><button type="submit" formaction="${ownerNote.noteAction}" name="status" value="">Save note</button>` : `<div data-block-note hidden><label for="block-note-${task._id}">Note</label><small class="hint">Say what's blocking you here, if anything.</small><textarea id="block-note-${task._id}" name="note" maxlength="2000">${esc(task.note)}</textarea><button name="status" value="blocked">Save Blocked</button></div>`}</form>`;
+const taskDisclosure = (task: TaskDoc & { _id: ObjectId }, action: string, now: Date, list?: ListDoc | null, noteAction?: string) => `<article class="task-row"><div class="task-heading"><details><summary>${esc(task.title)}${additionalTag(task,list)}${overdueTag(task,now)}</summary><div>${task.instruction ? `<p class="instruction">${esc(task.instruction)}</p>` : ""}${task.tags.length ? `<p>Tags: ${task.tags.map(esc).join(", ")}</p>` : ""}${deadlineTag(task,now)}${!noteAction && task.note ? `<p>Note: ${esc(task.note)}</p>` : ""}</div></details>${statusForm(action, task, noteAction ? { noteAction, hint: "Say what's blocking you here, if anything." } : undefined)}</div></article>`;
 const noteForm = (action: string, task: TaskDoc & { _id: ObjectId }, hint: string) => `<form method="post" action="${action}"><div class="field"><label for="note-${task._id}">Note</label><small class="hint" id="note-${task._id}-hint">${hint}</small><textarea id="note-${task._id}" name="note" maxlength="2000" aria-describedby="note-${task._id}-hint">${esc(task.note)}</textarea></div><button>Save note</button></form>`;
-const deleteListMessage = (active: number, count: number) => `Revokes ${plural(active, "active link")} and returns ${plural(count, "Task")} to Unassigned Tasks. The Tasks themselves are kept.`;
+const deleteListMessage = (active: number, count: number) => `Revokes ${plural(active, "active link")} and removes the List\u2019s ${plural(count, "Task")}. Templates are untouched.`;
 // Native modal: traps focus, closes on Escape. The link still opens the confirmation page when scripts are off.
 const confirmDialog = (id: string, title: string, message: string, action: string, button: string) => `<dialog id="${id}" aria-labelledby="${id}-title" aria-describedby="${id}-message"><h2 id="${id}-title">${esc(title)}</h2><p id="${id}-message">${message}</p><form method="post" action="${action}" class="actions"><button class="danger">${button}</button><button type="submit" formmethod="dialog" formnovalidate class="secondary" autofocus>Cancel</button></form></dialog>`;
 const confirmDelete = (message: string, button: string, cancel: string) => `<p>${message}</p><form method="post" class="actions"><button class="danger">${button}</button><a href="${cancel}">Cancel</a></form>`;
@@ -59,13 +60,14 @@ const ownerOf = async (ctx: AssignContext, request: FastifyRequest, reply: Fasti
 const textLimit = (text: string, limit: number) => text.length <= limit;
 const tagsFrom = (form: ReturnType<typeof parseForm>) => [...new Set(fields(form, "tags").flatMap(x => x.split(",")).map(x => x.trim().toLowerCase()).filter(Boolean))];
 const idFrom = (request: FastifyRequest) => parseId((request.params as Params).id);
+const boardPath = (listId?: ObjectId | string) => listId ? `/assign/tasks?list=${listId}#list-${listId}` : "/assign/tasks";
 const taskLink = (task: TaskDoc & { _id: ObjectId }) => `<a href="/assign/tasks/${task._id}">${esc(task.title)}</a> ${badge(task.status)}`;
 
 async function ownTask(ctx: AssignContext, owner: OwnerDoc & { _id: ObjectId }, request: FastifyRequest) {
-  const _id = idFrom(request); return _id ? ctx.store.tasks.findOne({ _id, ownerId: owner._id }) : null;
+  const _id = idFrom(request); return _id ? ctx.store.tasks.findOne({ _id, ownerId: owner._id, ...live }) : null;
 }
 async function ownList(ctx: AssignContext, owner: OwnerDoc & { _id: ObjectId }, request: FastifyRequest) {
-  const _id = idFrom(request); return _id ? ctx.store.lists.findOne({ _id, ownerId: owner._id }) : null;
+  const _id = idFrom(request); return _id ? ctx.store.lists.findOne({ _id, ownerId: owner._id, ...live }) : null;
 }
 async function activeAssignment(ctx: AssignContext, code: string) {
   return /^[A-Za-z0-9]{10}$/.test(code) ? ctx.store.assignments.findOne({ code, active: true }) : null;
@@ -87,19 +89,20 @@ function addTaskFailure(reply: FastifyReply, form: ReturnType<typeof parseForm>,
   return reply.code(400).type("text/html; charset=utf-8").send(page("Tasks",body,{current:"/assign/tasks"}));
 }
 async function statusChange(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }, status: TaskStatus, note: string, actor?: { name: string; personId: ObjectId }) {
+  if (task.kind === "template") return "Templates have no status. Add one to a List to work on it.";
   if (!textLimit(note, 2000)) return "Note is too long.";
   const allowed = (task.status === "open" && ["blocked","done"].includes(status)) || (task.status === "blocked" && ["open","done"].includes(status)) || (task.status === "done" && status === "open");
   if (!allowed) return "Invalid status transition.";
   const before = task.status;
   const savedNote = status === "blocked" ? note : task.note;
-  await ctx.store.tasks.updateOne({ _id: task._id, ownerId: task.ownerId }, { $set: { status, note: savedNote, updatedAt: ctx.now() } });
+  await ctx.store.tasks.updateOne({ _id: task._id, ownerId: task.ownerId }, status === "done" ? { $set: { status, note: savedNote, updatedAt: ctx.now(), doneAt: ctx.now() } } : { $set: { status, note: savedNote, updatedAt: ctx.now() }, $unset: { doneAt: "" } });
   await recordEvent(ctx, task.ownerId, "task.status", { taskId: task._id, listId: task.listId, personId: actor?.personId, fromValue: before, toValue: `${status}${savedNote ? `: ${savedNote}` : ""}`, summary: `${actor?.name || "Owner"} marked ${task.title} ${status}` });
   if (task.listId && status !== "done") await ctx.store.lists.updateOne({ _id: task.listId, ownerId: task.ownerId }, { $unset: { completedAt: "" } });
   if (task.listId && status === "done") await syncCompletion(ctx, task.ownerId, task.listId);
   return null;
 }
 async function syncCompletion(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId) {
-  const [total, pending] = await Promise.all([ctx.store.tasks.countDocuments({ ownerId, listId }), ctx.store.tasks.countDocuments({ ownerId, listId, status: { $ne: "done" } })]);
+  const [total, pending] = await Promise.all([ctx.store.tasks.countDocuments({ ownerId, listId, ...live }), ctx.store.tasks.countDocuments({ ownerId, listId, ...live, status: { $ne: "done" } })]);
   if (total && !pending) { const won = await ctx.store.lists.findOneAndUpdate({ _id: listId, ownerId, completedAt: { $exists: false } }, { $set: { completedAt: ctx.now() } }); if (won) await recordEvent(ctx, ownerId, "list.complete", { listId }); }
   else await ctx.store.lists.updateOne({ _id: listId, ownerId }, { $unset: { completedAt: "" } });
 }
@@ -107,7 +110,7 @@ const inactiveMessage = (replaced: boolean) => replaced ? "This link has been re
 async function inactiveLink(ctx: AssignContext, code: string, reply: FastifyReply) { const old = await ctx.store.assignments.findOne({ code }); reply.header("X-Robots-Tag", "noindex"); return sendPage(reply, "Link no longer available", `<p>${inactiveMessage(!!old?.replacedAt)}</p>`, { assignee: true }); }
 async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }) {
   if (!task.listId) return;
-  const list = await ctx.store.lists.findOne({ _id: task.listId, ownerId: task.ownerId });
+  const list = await ctx.store.lists.findOne({ _id: task.listId, ownerId: task.ownerId, ...live });
   if (!list) return;
   await ctx.store.lists.updateOne({ _id: list._id, ownerId: task.ownerId }, { $inc: { taskCount: -1 }, ...(list.firstAssignedAt ? { $pull: { removedTasks: { taskId: task._id } } } : {}) });
   if (list.firstAssignedAt) {
@@ -118,15 +121,29 @@ async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }
   await syncCompletion(ctx, task.ownerId, list._id);
 }
 
+function newCode() {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
+  while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
+  return code;
+}
+// The List's active Assignment, created with no Person if none exists yet. A lost race returns the winner's.
+async function ensureLink(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }) {
+  const existing = await ctx.store.assignments.findOne({ ownerId, listId: list._id, active: true }); if (existing) return existing;
+  try { await ctx.store.assignments.insertOne({ ownerId, listId: list._id, code: newCode(), active: true, viewCount: 0 }); }
+  catch (error) { const winner = await ctx.store.assignments.findOne({ ownerId, listId: list._id, active: true }); if (winner) return winner; throw error; }
+  await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $set: { status: "active" } });
+  await ctx.store.lists.updateOne({ _id: list._id, ownerId, firstAssignedAt: { $exists: false } }, { $set: { firstAssignedAt: ctx.now() } });
+  await recordEvent(ctx, ownerId, "assignment.create", { listId: list._id });
+  return (await ctx.store.assignments.findOne({ ownerId, listId: list._id, active: true }))!;
+}
 async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId, name: string) {
   let createdPersonId: ObjectId | undefined;
-  let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() });
-  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); createdPersonId = result.insertedId; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase() }); } }
+  let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase(), ...live });
+  if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId, name, nameLower: name.toLowerCase() }); createdPersonId = result.insertedId; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase(), ...live }); } }
   if (!person) throw new Error("Could not create Person");
   try {
     const previous = await ctx.store.assignments.findOne({ ownerId, listId, active: true });
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
-    while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
+    const code = newCode();
     if (previous) await ctx.store.assignments.updateMany({ ownerId, listId, active: true }, { $set: { active: false, revokedAt: ctx.now(), replacedAt: ctx.now() } });
     try { await ctx.store.assignments.insertOne({ ownerId, listId, personId: person._id, code, active: true, viewCount: 0 }); }
     catch (error) { if (previous) await ctx.store.assignments.updateOne({ _id: previous._id }, { $set: { active: true }, $unset: { revokedAt: "", replacedAt: "" } }); throw error; }
@@ -139,50 +156,70 @@ async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectI
     throw error;
   }
 }
+const copyOf = (t: TaskDoc & { _id: ObjectId }, listId: ObjectId, at: Date, additional: boolean): TaskDoc => ({ kind: "copy", ownerId: t.ownerId, title: t.title, tags: t.tags, instruction: t.instruction, note: "", status: "open", ...(t.deadline ? { deadline: t.deadline } : {}), listId, templateId: t._id, ...(additional ? { addedToListAt: at } : {}), createdAt: at, updatedAt: at });
 async function addTasks(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }, ids: ObjectId[]) {
-  if (!ids.length || ids.length > 50 || list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
-  const tasks = await ctx.store.tasks.find({ ownerId, _id: { $in: ids } }).toArray();
-  if (tasks.length !== ids.length || tasks.some(t => t.listId)) return "Task already in another List or not found.";
+  if (!ids.length || ids.length > 50) return "A List holds at most 50 Tasks.";
+  const found = await ctx.store.tasks.find({ ownerId, _id: { $in: ids }, kind: "template", ...live }).toArray();
+  if (found.length !== ids.length) return "Template not found.";
+  // A Template already in this List is not added twice (double-click, repeated drop).
+  const present = new Set((await ctx.store.tasks.find({ ownerId, listId: list._id, templateId: { $in: ids }, ...live }, { projection: { templateId: 1 } }).toArray()).map(c => String(c.templateId)));
+  const templates = found.filter(t => !present.has(String(t._id)));
+  if (!templates.length) return null;
+  ids = templates.map(t => t._id);
+  if (list.taskCount + ids.length > 50) return "A List holds at most 50 Tasks.";
   const now = ctx.now();
   const reserved = await ctx.store.lists.updateOne({ _id: list._id, ownerId, taskCount: { $lte: 50 - ids.length } }, { $inc: { taskCount: ids.length }, $unset: { completedAt: "" } });
   if (!reserved.modifiedCount) return "A List holds at most 50 Tasks.";
-  const attached = await ctx.store.tasks.updateMany({ ownerId, _id: { $in: ids }, listId: { $exists: false } }, { $set: { listId: list._id, ...(list.firstAssignedAt ? { addedToListAt: now } : {}) } });
-  if (attached.modifiedCount !== ids.length) { await ctx.store.tasks.updateMany({ ownerId, listId: list._id, _id: { $in: ids } }, { $unset: { listId: "", addedToListAt: "" } }); await ctx.store.lists.updateOne({ _id: list._id }, { $inc: { taskCount: -ids.length } }); return "A Task was added to another List. Try again."; }
-  await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $pull: { removedTasks: { taskId: { $in: ids } } } });
-  if (list.status === "active") for (const task of tasks) await recordEvent(ctx, ownerId, "list.add", { listId: list._id, taskId: task._id, fromValue: task.title, summary: `New Task added: ${task.title}` });
+  const copies = ids.map(id => copyOf(templates.find(t => t._id.equals(id))!, list._id, now, !!list.firstAssignedAt));
+  let inserted;
+  try { inserted = await ctx.store.tasks.insertMany(copies); }
+  catch (error) { await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $inc: { taskCount: -ids.length } }); throw error; }
+  if (list.status === "active") for (const [index, id] of Object.entries(inserted.insertedIds)) await recordEvent(ctx, ownerId, "list.add", { listId: list._id, taskId: id, fromValue: copies[+index]!.title, summary: `New Task added: ${copies[+index]!.title}` });
   return null;
 }
 export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   const send = (reply: FastifyReply, title: string, body: string, options: PageOptions = {}) => sendPage(reply, title, body, { ...options, noLogin: ctx.config.noLogin });
   app.get("/assign/tasks", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
-    const tag = String((request.query as { tag?: string }).tag || "").toLowerCase();
-    const [tasks, allTasks, lists] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, ...(tag ? { tags: tag } : {}) }).sort({ createdAt: -1 }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray(), ctx.store.lists.find({ ownerId: owner._id }).toArray()]);
-    const listName = (id: ObjectId) => lists.find(l => l._id.equals(id))?.name || "a List";
-    const create = `<button type="button" data-dialog="add-task" aria-haspopup="dialog">Add Task</button><dialog id="add-task" aria-labelledby="add-task-title"><h2 id="add-task-title">Add Task</h2><form method="post" action="/assign/tasks"><div class="field"><label for="task-title">Title</label><input id="task-title" name="title" maxlength="200" required></div><div class="field"><label for="task-tags">Tags</label><input id="task-tags" name="tags" placeholder="kitchen, urgent"></div><div class="field"><label for="task-instruction">Instructions</label><textarea id="task-instruction" name="instruction" maxlength="2000"></textarea></div><div class="field"><label for="task-deadline">Deadline</label><input id="task-deadline" name="deadlineDate" type="date"><label for="task-deadline-time">Time (defaults to 23:59)</label><input id="task-deadline-time" name="deadlineTime" type="time"></div><input type="hidden" name="timezoneOffset"><button>Add Task</button><button type="button" class="secondary" onclick="this.closest('dialog').close()">Cancel</button></form></dialog>`;
-    const filter = `<form class="filters" role="search" aria-label="Filter Tasks"><div class="field"><label for="tag-filter">Filter by tag</label><input id="tag-filter" name="tag" value="${esc(tag)}"></div><div class="actions"><button>Filter</button>${tag ? '<a href="/assign/tasks">Show all Tasks</a>' : ""}</div></form>`;
-    const items = tasks.length ? `<div id="task-collection" class="task-collection" data-view="list">${tasks.map(t => taskDisclosure(t, `/assign/tasks/${t._id}/status`, ctx.now(), t.listId ? lists.find(l => l._id.equals(t.listId!)) : null, true)).join("")}</div>` : `<p class="empty">${tag ? `No Tasks tagged “${esc(tag)}”.` : "No Tasks yet. Add your first one above."}</p>`;
-    const viewToggle = tasks.length ? '<div id="task-view-toggle" class="view-toggle" role="group" aria-label="Task view" hidden><button type="button" data-task-view="list" aria-controls="task-collection" aria-pressed="true">List</button><button type="button" data-task-view="grid" aria-controls="task-collection" aria-pressed="false">Grid</button></div>' : "";
-    const sidebar = `<nav class="list-sidebar" aria-labelledby="list-sidebar-title"><h2 id="list-sidebar-title">Lists</h2>${lists.map(l => { const mine = allTasks.filter(t => t.listId?.equals(l._id)); return `<p><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="badge">${l.status === "active" ? "Assigned" : "Draft"}</span> ${mine.filter(t=>t.status==="done").length}/${mine.length}</p>` }).join("") || '<p>No Lists yet.</p>'}</nav>`;
-    const selected = `<form id="select-tasks" method="post" action="/assign/lists"><button type="button" data-selection-action data-dialog="create-list" disabled>Create List</button><button type="button" data-selection-action data-dialog="add-to-list" disabled>Add to List</button></form><dialog id="create-list" aria-labelledby="create-list-title"><h2 id="create-list-title">Create List</h2><form method="post" action="/assign/lists" id="create-list-form"><label>List name <input name="name" maxlength="200" required></label><label>Person (optional) <input name="person" list="people-names" maxlength="200"></label><datalist id="people-names">${(await ctx.store.people.find({ ownerId: owner._id }).toArray()).map(p=>`<option value="${esc(p.name)}">`).join("")}</datalist><button>Create List</button><button type="button" onclick="this.closest('dialog').close()">Cancel</button></form></dialog><dialog id="add-to-list" aria-labelledby="add-to-list-title"><h2 id="add-to-list-title">Add to List</h2><form method="post" action="/assign/lists/add-selected"><label>List <select name="listId">${lists.map(l=>`<option value="${l._id}">${esc(l.name)}</option>`).join("")}</select></label><button>Add Tasks</button></form></dialog><script>document.addEventListener('submit',e=>{if(e.target.id==='create-list-form'||e.target.action.endsWith('/add-selected')){for(const old of e.target.querySelectorAll('input[data-picked]'))old.remove();for(const checked of document.querySelectorAll('#task-collection input[name=taskIds]:checked')){const h=document.createElement('input');h.type='hidden';h.name='taskIds';h.value=checked.value;h.dataset.picked='';e.target.append(h)}}});document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();document.querySelector('form[action=\"/assign/tasks\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()});</script>`;
-    return send(reply, "Tasks", `${create}${filter}<div class="tasks-layout">${sidebar}<div>${selected}<div class="task-toolbar"><h2>${tag ? `Tasks tagged “${esc(tag)}”` : "All Tasks"} (${tasks.length})</h2>${viewToggle}</div>${items}</div></div>${taskViewScript}`, { live: "/assign/events", current: "/assign/tasks" });
+    const query = request.query as { tag?: string; list?: string; rename?: string };
+    const tag = String(query.tag || "").toLowerCase();
+    const [templates, copies, lists, assignments, people] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, kind: "template", ...live, ...(tag ? { tags: tag } : {}) }).sort({ createdAt: -1 }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, kind: "copy", ...live }).toArray(), ctx.store.lists.find({ ownerId: owner._id, ...live }).sort({ createdAt: 1 }).toArray(), ctx.store.assignments.find({ ownerId: owner._id, active: true }).toArray(), ctx.store.people.find({ ownerId: owner._id, ...live }).toArray()]);
+    const now = ctx.now();
+    const inLists = (t: TaskDoc & { _id: ObjectId }) => new Set(copies.filter(c => c.templateId?.equals(t._id) && c.listId).map(c => String(c.listId))).size;
+    const quickAdd = `<form class="quick-add" method="post" action="/assign/tasks"><label class="sr-only" for="quick-title">New Task title</label><input id="quick-title" name="title" maxlength="200" required placeholder="New Task, then press Enter" autocomplete="off"><button>Add Task</button><details class="more-fields"><summary>Tags, instructions, Deadline</summary><div class="field"><label for="task-tags">Tags</label><input id="task-tags" name="tags" placeholder="kitchen, urgent"></div><div class="field"><label for="task-instruction">Instructions</label><textarea id="task-instruction" name="instruction" maxlength="2000"></textarea></div><div class="field"><label for="task-deadline">Deadline</label><input id="task-deadline" name="deadlineDate" type="date"><label for="task-deadline-time">Time (defaults to 23:59)</label><input id="task-deadline-time" name="deadlineTime" type="time"></div></details><input type="hidden" name="timezoneOffset"></form><script>document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();document.querySelector('form.quick-add').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()})</script>`;
+    const filter = `<form class="filters" role="search" aria-label="Filter Templates"><div class="field"><label for="tag-filter">Filter by tag</label><input id="tag-filter" name="tag" value="${esc(tag)}"></div><div class="actions"><button>Filter</button>${tag ? '<a href="/assign/tasks">Show all Tasks</a>' : ""}</div></form>`;
+    const templateRow = (t: TaskDoc & { _id: ObjectId }) => `<li class="tpl-row" draggable="true" data-drag-template="${t._id}"><label class="pick"><input type="checkbox" name="taskIds" value="${t._id}" form="select-tasks"><span class="sr-only">Select ${esc(t.title)}</span></label><span class="tpl-main"><a href="/assign/tasks/${t._id}">${esc(t.title)}</a>${t.tags.length ? ` <span class="hint">${t.tags.map(esc).join(", ")}</span>` : ""}${t.deadline ? ` <span class="hint">Deadline <time data-absolute datetime="${t.deadline.toISOString()}">${t.deadline.toISOString()}</time></span>` : ""}</span><span class="hint in-lists">in ${plural(inLists(t), "list")}</span></li>`;
+    const targets = `<form id="select-tasks" class="select-bar" method="post" action="/assign/lists/add-selected" aria-label="Selected Templates"><span class="sel-count" role="status" aria-live="polite"><span data-sel-count>0</span> selected</span><label class="sr-only" for="bar-list-name">List name (optional)</label><input id="bar-list-name" name="name" maxlength="200" placeholder="List name (optional)" autocomplete="off" form="select-tasks" disabled><button type="button" data-create-share>Create list &amp; copy link</button><label class="sr-only" for="add-target">Add to existing</label><select id="add-target" name="listId"><option value="" disabled selected>Add to existing…</option>${lists.map(l => `<option value="${l._id}">${esc(l.name)}</option>`).join("")}</select><button data-add-existing>Add</button><button type="button" class="ghost" data-clear-selection>Clear</button><small class="hint" data-share-status role="status"></small></form>`;
+    const templatesPanel = `<section class="templates-panel" data-drop-templates aria-labelledby="templates-title"><h2 id="templates-title">Templates <span class="muted">(${templates.length})</span></h2>${quickAdd}${filter}${templates.length ? `<ul class="tpl-list">${templates.map(templateRow).join("")}</ul>` : `<p class="empty">${tag ? `No Tasks tagged “${esc(tag)}”.` : "No Tasks yet. Type one above and press Enter."}</p>`}${targets}</section>`;
+    const listRow = (l: ListDoc & { _id: ObjectId }) => {
+      const mine = copies.filter(c => c.listId?.equals(l._id)), done = mine.filter(c => c.status === "done").length;
+      const assignment = assignments.find(a => a.listId.equals(l._id)), assignee = assignment?.personId && people.find(p => p._id.equals(assignment.personId!));
+      const pill = !assignment ? '<span class="pill">Not shared</span>' : assignee ? `<span class="pill ok">${esc(assignee.name)}</span>` : '<span class="pill wait">Awaiting name</span>';
+      const copyRow = (c: TaskDoc & { _id: ObjectId }) => `<li class="copy-item ${c.status}" draggable="true" data-drag-copy="${c._id}" data-remove-url="/assign/lists/${l._id}/remove"><form method="post" action="/assign/tasks/${c._id}/status"><input type="hidden" name="board" value="1"><button class="check" name="status" value="${c.status === "done" ? "open" : "done"}" aria-label="${c.status === "done" ? "Reopen" : "Mark done"}: ${esc(c.title)}">${c.status === "done" ? "☑" : "☐"}</button></form><span class="copy-main"><a href="/assign/tasks/${c._id}">${esc(c.title)}</a>${c.status === "blocked" ? ' <span class="badge blocked">Blocked</span>' : ""}${additionalTag(c, l)}${overdueTag(c, now)}</span><form method="post" action="/assign/lists/${l._id}/remove"><input type="hidden" name="taskId" value="${c._id}"><button class="ghost" aria-label="Remove ${esc(c.title)} from this List">✕</button></form></li>`;
+      const share = assignment ? `<p>Assigned to <strong>${esc(assignee?.name || "(awaiting name)")}</strong> · ${assignment.lastViewedAt ? `Last opened ${timeTag(assignment.lastViewedAt)}` : "Not opened yet"}</p><div class="field"><label for="share-link-${l._id}">Link to send ${esc(assignee?.name || "them")}</label><div class="copy-row"><input id="share-link-${l._id}" readonly value="${esc(ctx.config.publicUrl)}/l/${assignment.code}"><button type="button" data-copy="share-link-${l._id}">Copy link</button></div><small class="hint" id="share-link-${l._id}-status" role="status"></small></div><form method="post" action="/assign/lists/${l._id}/revoke"><p class="hint">Revoking stops this link from working straight away. The Tasks stay in the List.</p><button class="danger">Revoke link</button></form>` : `<div class="actions"><button type="button" data-create-link="/assign/lists/${l._id}/link">Create &amp; copy link</button><small class="hint" role="status"></small></div>`;
+      const renaming = query.rename === l._id.toHexString(), open = renaming || query.list === l._id.toHexString() ? " open" : "";
+      return `<details class="list-row" id="list-${l._id}"${open}${renaming ? " data-rename" : ""} data-drop-list="${l._id}" data-add-url="/assign/lists/${l._id}/add"><summary><span class="summary-line"><span class="list-name" title="Double-click to rename">${esc(l.name)}</span><a class="rename-link" data-rename-link href="/assign/tasks?rename=${l._id}#list-${l._id}" aria-label="Rename ${esc(l.name)}" title="Rename">✎</a>${pill}<progress value="${done}" max="${mine.length}" aria-label="${done} of ${mine.length} done"></progress><span class="count">${plural(mine.length, "task")}</span></span></summary><div class="list-body"><h3>Tasks <span class="muted">(${done} of ${mine.length} done)</span></h3>${mine.length ? `<ul class="copy-list">${mine.map(copyRow).join("")}</ul>` : '<p class="empty">No Tasks in this List yet. Tick Templates and add them.</p>'}<h3>Sharing</h3>${share}<form method="post" action="/assign/lists/${l._id}/duplicate"><button class="secondary">Duplicate List</button></form><p><a href="/assign/lists/${l._id}/delete" data-dialog="delete-list-${l._id}" aria-haspopup="dialog">Delete this List…</a></p>${confirmDialog(`delete-list-${l._id}`, `Delete ${l.name}?`, deleteListMessage(assignment ? 1 : 0, mine.length), `/assign/lists/${l._id}/delete`, "Delete List")}</div></details>`;
+    };
+    const newList = `<form class="new-list" method="post" action="/assign/lists"><label class="sr-only" for="new-list-name">New List name</label><input id="new-list-name" name="name" maxlength="200" required placeholder="New List name" autocomplete="off"><button>Create List</button></form>`;
+    const listsPanel = `<aside class="lists-panel" aria-labelledby="lists-title"><h2 id="lists-title">Lists <span class="muted">(${lists.length})</span></h2>${newList}${lists.map(listRow).join("") || '<p class="empty">No Lists yet. Name one above.</p>'}</aside>`;
+    return send(reply, "Tasks", `<p class="touch-hint">Tick tasks, then tap the Create list &amp; copy link button.</p><div class="board-layout">${templatesPanel}${listsPanel}</div>${boardScript}`, { live: "/assign/events", current: "/assign/tasks" });
   });
   app.post("/assign/tasks", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const form = parseForm(request.body), title = field(form, "title"), instruction = field(form, "instruction"), tags = tagsFrom(form);
     if (!title || !textLimit(title, 200) || !textLimit(instruction, 2000) || tags.length > 5 || tags.some(x => x.length > 30)) return addTaskFailure(reply, form, "Invalid Task fields.");
     const deadline = deadlineFrom(form); if (deadline === "invalid") return addTaskFailure(reply, form, "Invalid Deadline.");
-    const at = ctx.now(); const result = await ctx.store.tasks.insertOne({ ownerId: owner._id, title, instruction, tags, note: "", status: "open", ...(deadline ? { deadline } : {}), createdAt: at, updatedAt: at });
+    const at = ctx.now(); const result = await ctx.store.tasks.insertOne({ kind: "template", ownerId: owner._id, title, instruction, tags, note: "", status: "open", ...(deadline ? { deadline } : {}), createdAt: at, updatedAt: at });
     await recordEvent(ctx, owner._id, "task.create", { taskId: result.insertedId, toValue: title });
     return redirect(reply, "/assign/tasks");
   });
   app.get("/assign/tasks/:id", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
-    const list = task.listId ? await ctx.store.lists.findOne({ _id: task.listId, ownerId: owner._id }) : null;
-    const summary = `<p>${badge(task.status)}${task.note ? ` ${esc(task.note)}` : ""}${list ? ` · In <a href="/assign/lists/${list._id}">${esc(list.name)}</a>` : " · Not in a List yet"}</p>`;
+    const list = task.listId ? await ctx.store.lists.findOne({ _id: task.listId, ownerId: owner._id, ...live }) : null;
+    const summary = `<p>${badge(task.status)}${task.note ? ` ${esc(task.note)}` : ""}${list ? ` · In <a href="${boardPath(list._id)}">${esc(list.name)}</a>` : " · Not in a List yet"}</p>`;
     const details = `<section><h2>Details</h2><form method="post" action="/assign/tasks/${task._id}/edit"><div class="field"><label for="edit-title">Title</label><input id="edit-title" name="title" maxlength="200" value="${esc(task.title)}" required></div><div class="field"><label for="edit-tags">Tags</label><small class="hint" id="edit-tags-hint">Up to 5, separated by commas.</small><input id="edit-tags" name="tags" value="${esc(task.tags.join(", "))}" aria-describedby="edit-tags-hint"></div><div class="field"><label for="edit-instruction">Instructions</label><textarea id="edit-instruction" name="instruction" maxlength="2000">${esc(task.instruction)}</textarea></div><div class="field"><label for="edit-deadline">Deadline</label><input id="edit-deadline" type="date" name="deadlineDate" data-deadline="${task.deadline?.toISOString() || ""}"><input type="time" name="deadlineTime" ></div><input type="hidden" name="timezoneOffset"><button>Save details</button></form><script>document.querySelector('input[name=timezoneOffset]').value=new Date().getTimezoneOffset();const d=document.querySelector('[data-deadline]');if(d.dataset.deadline){const t=new Date(d.dataset.deadline),local=new Date(t.getTime()-t.getTimezoneOffset()*60000).toISOString();d.value=local.slice(0,10);document.querySelector('input[name=deadlineTime]').value=local.slice(11,16)}document.querySelector('form[action$=\"/edit\"]').addEventListener('submit',e=>{const f=e.target,d=f.elements.deadlineDate.value,t=f.elements.deadlineTime.value||'23:59';if(d)f.elements.timezoneOffset.value=new Date(d+'T'+t).getTimezoneOffset()})</script></section>`;
-    const body = `<a class="back" href="/assign/tasks">← All Tasks</a>${summary}${deadlineTag(task,ctx.now())}<details><summary>Details</summary>${details}</details><section><h2>Status</h2>${statusForm(`/assign/tasks/${task._id}/status`, task)}</section><section><h2>Note</h2>${noteForm(`/assign/tasks/${task._id}/note`, task, "The assignee sees this note and can edit it.")}</section><p><a href="/assign/tasks/${task._id}/delete">Delete this Task…</a></p>`;
+    const body = `<a class="back" href="/assign/tasks">← All Tasks</a>${summary}${deadlineTag(task,ctx.now())}<details><summary>Details</summary>${details}</details><section><h2>Status &amp; Note</h2>${statusForm(`/assign/tasks/${task._id}/status`, task, { noteAction: `/assign/tasks/${task._id}/note`, hint: "The assignee sees this note and can edit it." })}</section><p><a href="/assign/tasks/${task._id}/delete">Delete this Task…</a></p>`;
     return send(reply, task.title, body, { live: "/assign/events", current: "/assign/tasks" });
   });
   app.post("/assign/tasks/:id/edit", async (request, reply) => {
@@ -199,7 +236,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const form = parseForm(request.body), status = field(form, "status"), note = field(form, "note");
     if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
     const error = await statusChange(ctx, task, status as TaskStatus, note); if (error) return fail(reply, 400, error);
-    return redirect(reply, `/assign/tasks/${task._id}`);
+    return redirect(reply, field(form, "board") && task.listId ? boardPath(task.listId) : `/assign/tasks/${task._id}`);
   });
   app.post("/assign/tasks/:id/note", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
@@ -208,97 +245,104 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     await recordEvent(ctx, owner._id, "task.note", { taskId: task._id, listId: task.listId, fromValue: task.note, toValue: note });
     return redirect(reply, `/assign/tasks/${task._id}`);
   });
-  app.get("/assign/lists", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return;
-    const [lists, tasks] = await Promise.all([ctx.store.lists.find({ ownerId: owner._id }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray()]);
-    const choices = tasks.length ? `<fieldset><legend>Tasks to include <span class="hint">(optional, up to 50)</span></legend>${tasks.map(t => `<label><input type="checkbox" name="taskIds" value="${t._id}" ${t.listId ? "disabled" : ""}>${esc(t.title)}${t.listId ? ` <span class="hint">(already in ${esc(lists.find(l => l._id.equals(t.listId!))?.name || "another List")})</span>` : ""}</label>`).join("")}</fieldset>` : `<p class="hint">You have no Tasks yet. You can <a href="/assign/tasks">add Tasks</a> first, or create an empty List and add them later.</p>`;
-    const create = `<section><h2>Create a List</h2><p class="hint">A List groups Tasks so you can share them with one person through a single link.</p><form method="post" action="/assign/lists"><div class="field"><label for="list-name">List name</label><input id="list-name" name="name" maxlength="200" required></div>${choices}<button>Create List</button></form></section>`;
-    const items = lists.length ? lists.map(l => `<article><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="badge">${l.status === "active" ? "Assigned" : "Draft"}</span> <span class="muted">· ${plural(l.taskCount, "Task")}</span></article>`).join("") : '<p class="empty">No Lists yet.</p>';
-    return send(reply, "Lists", `${create}<h2>Your Lists (${lists.length})</h2>${items}`, { live: "/assign/events", current: "/assign/lists" });
-  });
+  app.get("/assign/lists", async (_request, reply) => redirect(reply, boardPath()));
   app.post("/assign/lists", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const form = parseForm(request.body), name = field(form, "name"), ids = [...new Set(fields(form, "taskIds"))];
-    if (!name || !textLimit(name, 200) || ids.length > 50 || ids.some(x => !parseId(x))) return fail(reply, 400, "Invalid List.");
-    const tasks = await ctx.store.tasks.find({ ownerId: owner._id, _id: { $in: ids.map(x => new ObjectId(x)) } }).toArray();
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const form = parseForm(request.body), ids = [...new Set(fields(form, "taskIds"))], wantsLink = field(form, "link") === "1";
+    let name = field(form, "name");
+    // The select-and-share bar may leave the name blank: pick the first free "List N".
+    if (!name && ids.length) { const taken = new Set((await ctx.store.lists.find({ ownerId: owner._id, ...live }, { projection: { name: 1 } }).toArray()).map(l => l.name)); let n = taken.size + 1; while (taken.has(`List ${n}`)) n++; name = `List ${n}`; }
+    if (!name || !textLimit(name, 80) || ids.length > 50 || ids.some(x => !parseId(x))) return fail(reply, 400, "Invalid List.");
+    const tasks = await ctx.store.tasks.find({ ownerId: owner._id, ...live, _id: { $in: ids.map(x => new ObjectId(x)) } }).toArray();
     if (tasks.length !== ids.length) return fail(reply, 404, "Task not found.");
-    const occupied = tasks.find(t => t.listId); if (occupied) { const other = await ctx.store.lists.findOne({ ownerId: owner._id, _id: occupied.listId }); return fail(reply, 400, `Task already in ${other?.name || "another List"}.`); }
+    if (tasks.some(t => t.kind !== "template")) return fail(reply, 400, "Only Templates can be added to a List.");
     const list = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: ids.length, createdAt: ctx.now() });
-    const attached = await ctx.store.tasks.updateMany({ ownerId: owner._id, _id: { $in: tasks.map(t => t._id) }, listId: { $exists: false } }, { $set: { listId: list.insertedId } });
-    if (attached.modifiedCount !== ids.length) {
-      await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } });
-      await ctx.store.lists.deleteOne({ _id: list.insertedId, ownerId: owner._id });
-      return fail(reply, 409, "A Task was added to another List. Try again.");
-    }
-    const personName = field(form, "person");
+    const dropList = async () => { await ctx.store.tasks.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.lists.deleteOne({ _id: list.insertedId, ownerId: owner._id }); };
+    const at = ctx.now(); if (tasks.length) await ctx.store.tasks.insertMany(tasks.map(t => copyOf(t, list.insertedId, at, false)));
+    const personName = field(form, "person"), shareNow = wantsLink && !personName;
     if (personName) {
-      if (!textLimit(personName, 200)) { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 400, "Invalid Person name."); }
+      if (!textLimit(personName, 200)) { await dropList(); return fail(reply, 400, "Invalid Person name."); }
       try { await assignList(ctx, owner._id, list.insertedId, personName); }
-      catch { await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list.insertedId }, { $unset: { listId: "" } }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: list.insertedId }); await ctx.store.lists.deleteOne({ _id: list.insertedId }); return fail(reply, 500, "Could not assign List."); }
+      catch { await dropList(); return fail(reply, 500, "Could not assign List."); }
     }
     await recordEvent(ctx, owner._id, "list.create", { listId: list.insertedId, toValue: name });
-    return redirect(reply, `/assign/lists/${list.insertedId}`);
+    if (shareNow) {
+      try { const assignment = await ensureLink(ctx, owner._id, { ownerId: owner._id, name, status: "draft", taskCount: ids.length, createdAt: at, _id: list.insertedId }); return reply.send({ url: `${ctx.config.publicUrl}/l/${assignment.code}`, listId: String(list.insertedId), name }); }
+      catch { await dropList(); return fail(reply, 500, "Could not create link."); }
+    }
+    return redirect(reply, boardPath(list.insertedId));
   });
   app.get("/assign/lists/:id", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const [tasks, free, assignment, people] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, listId: list._id }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, listId: { $exists: false } }).toArray(), ctx.store.assignments.findOne({ ownerId: owner._id, listId: list._id, active: true }), ctx.store.people.find({ ownerId: owner._id }).toArray()]);
-    const assignee = assignment && people.find(p => p._id.equals(assignment.personId));
-    const done = tasks.filter(t => t.status === "done").length;
-    const shared = assignment ? `<p>Assigned to <strong>${esc(assignee?.name || "someone")}</strong> · ${assignment.lastViewedAt ? `Last opened ${timeTag(assignment.lastViewedAt)}` : "Not opened yet"}</p><div class="field"><label for="share-link">Link to send ${esc(assignee?.name || "them")}</label><div class="copy-row"><input id="share-link" readonly value="${esc(ctx.config.publicUrl)}/l/${assignment.code}"><button type="button" data-copy="share-link">Copy link</button></div><small class="hint" id="share-link-status" role="status"></small></div><form method="post" action="/assign/lists/${list._id}/revoke"><p class="hint">Revoking stops this link from working straight away. The Tasks stay in the List.</p><button class="danger">Revoke link</button></form>` : '<p class="hint">Not assigned yet. Assign it to get a link you can send.</p>';
-    const assign = `<form method="post" action="/assign/lists/${list._id}/assign"><div class="field"><label for="person">${assignment ? "Reassign to" : "Assign to"}</label><small class="hint" id="person-hint">${assignment ? "Reassigning revokes the current link and makes a new one." : "Type a name. New names are added to People."}</small><input id="person" name="person" maxlength="200" list="people-names" autocomplete="off" aria-describedby="person-hint" required><datalist id="people-names">${people.map(p => `<option value="${esc(p.name)}">`).join("")}</datalist></div><button>${assignment ? "Reassign" : "Assign"}</button></form>`;
-    const rows = tasks.length ? tasks.map(t => `<article class="row"><span>${taskLink(t)}${additionalTag(t,list)}</span><form method="post" action="/assign/lists/${list._id}/remove"><input type="hidden" name="taskId" value="${t._id}"><button class="secondary" aria-label="Remove ${esc(t.title)} from this List">Remove</button></form></article>`).join("") : '<p class="empty">No Tasks in this List yet.</p>';
-    const add = free.length ? `<form method="post" action="/assign/lists/${list._id}/add"><fieldset><legend>Add Tasks</legend>${free.map(t=>`<label><input type="checkbox" name="taskIds" value="${t._id}">${esc(t.title)}</label>`).join("")}</fieldset><button>Add Tasks</button></form>` : '<p class="hint">Every Task is already in a List. <a href="/assign/tasks">Create a new Task</a> to add one here.</p>';
-    const rename = `<form method="post" action="/assign/lists/${list._id}/edit"><div class="field"><label for="list-rename">List name</label><input id="list-rename" name="name" value="${esc(list.name)}" maxlength="200" required></div><button>Rename</button></form>`;
-    const body = `<a class="back" href="/assign/lists">← All Lists</a><section><h2>Sharing</h2>${shared}${assign}</section><section><h2>Tasks <span class="muted">(${done} of ${tasks.length} done)</span></h2>${rows}${add}</section><section><h2>Rename</h2>${rename}</section><p><a href="/assign/lists/${list._id}/delete" data-dialog="delete-list" aria-haspopup="dialog">Delete this List…</a></p>${confirmDialog("delete-list", `Delete ${list.name}?`, deleteListMessage(assignment ? 1 : 0, tasks.length), `/assign/lists/${list._id}/delete`, "Delete List")}`;
-    return send(reply, list.name, body, { live: "/assign/events", current: "/assign/lists" });
+    return redirect(reply, boardPath(list._id));
   });
   app.post("/assign/lists/:id/edit", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const name = field(parseForm(request.body), "name"); if (!name || !textLimit(name, 200)) return fail(reply, 400, "Invalid List name.");
-    await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { name } }); await recordEvent(ctx, owner._id, "list.edit", { listId: list._id, fromValue: list.name, toValue: name }); return redirect(reply, `/assign/lists/${list._id}`);
+    const name = field(parseForm(request.body), "name");
+    if (!name) return redirect(reply, boardPath(list._id));
+    if (!textLimit(name, 80)) return fail(reply, 400, "List names can be at most 80 characters.");
+    await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { name } }); await recordEvent(ctx, owner._id, "list.edit", { listId: list._id, fromValue: list.name, toValue: name }); return redirect(reply, boardPath(list._id));
   });
   app.post("/assign/lists/:id/add", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const ids = [...new Set([...fields(parseForm(request.body), "taskIds"), ...fields(parseForm(request.body), "taskId")])].map(parseId);
     if (ids.some(x => !x)) return fail(reply, 400, "Invalid Task.");
     const error = await addTasks(ctx, owner._id, list, ids as ObjectId[]); if (error) return fail(reply, 400, error);
-    return redirect(reply, `/assign/lists/${list._id}`);
+    return redirect(reply, boardPath(list._id));
   });
   app.post("/assign/lists/add-selected", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const form = parseForm(request.body), listId = parseId(field(form, "listId"));
-    const list = listId && await ctx.store.lists.findOne({ _id: listId, ownerId: owner._id }); if (!list) return fail(reply, 404, "List not found.");
+    const list = listId && await ctx.store.lists.findOne({ _id: listId, ownerId: owner._id, ...live }); if (!list) return fail(reply, 404, "List not found.");
     const ids = [...new Set(fields(form, "taskIds"))].map(parseId); if (ids.some(x=>!x)) return fail(reply, 400, "Invalid Task.");
     const error = await addTasks(ctx, owner._id, list, ids as ObjectId[]); if (error) return fail(reply, 400, error);
-    return redirect(reply, `/assign/lists/${list._id}`);
+    return redirect(reply, boardPath(list._id));
   });
   app.post("/assign/lists/:id/remove", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const taskId = parseId(field(parseForm(request.body), "taskId")); if (!taskId) return fail(reply, 400, "Invalid Task.");
-    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id, listId: list._id }); if (!task) return fail(reply, 404, "Task not in List.");
-    await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id }, { $unset: { listId: "" } });
+    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: owner._id, listId: list._id, ...live }); if (!task) return fail(reply, 404, "Task not in List.");
+    await ctx.store.tasks.updateOne({ _id: taskId, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "removed" } });
     await removedTask(ctx, task);
-    return redirect(reply, `/assign/lists/${list._id}`);
+    return redirect(reply, boardPath(list._id));
   });
   app.post("/assign/lists/:id/assign", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const name = field(parseForm(request.body), "person"); if (!name || !textLimit(name, 200)) return fail(reply, 400, "Invalid Person name.");
     try { await assignList(ctx, owner._id, list._id, name); } catch { return fail(reply, 500, "Could not assign List."); }
-    return redirect(reply, `/assign/lists/${list._id}`);
+    return redirect(reply, boardPath(list._id));
+  });
+  app.post("/assign/lists/:id/link", async (request, reply) => {
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
+    try { const assignment = await ensureLink(ctx, owner._id, list); return reply.send({ url: `${ctx.config.publicUrl}/l/${assignment.code}` }); } catch { return fail(reply, 500, "Could not create link."); }
+  });
+  app.post("/assign/lists/:id/duplicate", async (request, reply) => {
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
+    const source = (await ctx.store.tasks.find({ ownerId: owner._id, listId: list._id, kind: "copy", ...live }).sort({ createdAt: 1 }).limit(50).toArray()), at = ctx.now(), name = `${list.name.slice(0, 80 - " (copy)".length)} (copy)`;
+    const made = await ctx.store.lists.insertOne({ ownerId: owner._id, name, status: "draft", taskCount: 0, createdAt: at });
+    let created = 0;
+    try {
+      if (source.length) created = (await ctx.store.tasks.insertMany(source.map((c, i) => ({ kind: "copy" as const, ownerId: owner._id, title: c.title, tags: c.tags, instruction: c.instruction, note: "", status: "open" as const, ...(c.deadline ? { deadline: c.deadline } : {}), listId: made.insertedId, ...(c.templateId ? { templateId: c.templateId } : {}), createdAt: new Date(at.getTime() + i), updatedAt: at })))).insertedCount;
+      await ctx.store.lists.updateOne({ _id: made.insertedId, ownerId: owner._id }, { $set: { taskCount: created } });
+      await ensureLink(ctx, owner._id, { ownerId: owner._id, name, status: "draft", taskCount: created, createdAt: at, _id: made.insertedId });
+    } catch { await ctx.store.tasks.deleteMany({ ownerId: owner._id, listId: made.insertedId }); await ctx.store.assignments.deleteMany({ ownerId: owner._id, listId: made.insertedId }); await ctx.store.lists.deleteOne({ _id: made.insertedId, ownerId: owner._id }); return fail(reply, 500, "Could not duplicate List."); }
+    await recordEvent(ctx, owner._id, "list.create", { listId: made.insertedId, toValue: name });
+    return redirect(reply, `/assign/tasks?rename=${made.insertedId}#list-${made.insertedId}`);
   });
   app.post("/assign/lists/:id/revoke", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     await ctx.store.assignments.updateMany({ ownerId: owner._id, listId: list._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
     await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { status: "draft" } });
-    await recordEvent(ctx, owner._id, "assignment.revoke", { listId: list._id }); return redirect(reply, `/assign/lists/${list._id}`);
+    await recordEvent(ctx, owner._id, "assignment.revoke", { listId: list._id }); return redirect(reply, boardPath(list._id));
   });
   app.get("/l/:code", async (request, reply) => {
     const code = (request.params as Params).code;
     const assignment = await activeAssignment(ctx, code);
     reply.header("X-Robots-Tag", "noindex");
     if (!assignment) return inactiveLink(ctx, code, reply);
-    const [list, person, tasks] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId }), ctx.store.tasks.find({ ownerId: assignment.ownerId, listId: assignment.listId }).toArray()]);
-    if (!list || !person) return inactiveLink(ctx, code, reply);
-    const showTask = (t: TaskDoc & { _id: ObjectId }) => taskDisclosure(t, `/l/${code}/tasks/${t._id}/status`, ctx.now(), list, false, `/l/${code}/tasks/${t._id}/note`);
+    const [list, person, tasks] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live }), ctx.store.tasks.find({ ownerId: assignment.ownerId, listId: assignment.listId, ...live }).toArray()]);
+    if (!list) return inactiveLink(ctx, code, reply);
+    if (!person) return send(reply, list.name, `<form method="post" action="/l/${code}/name"><div class="field"><label for="person">Your name</label><small class="hint" id="person-hint">Type your name once so the person who sent this link knows who you are.</small><input id="person" name="person" maxlength="200" autocomplete="name" aria-describedby="person-hint" required></div><button>Continue</button></form>`, { assignee: true });
+    const showTask = (t: TaskDoc & { _id: ObjectId }) => taskDisclosure(t, `/l/${code}/tasks/${t._id}/status`, ctx.now(), list, `/l/${code}/tasks/${t._id}/note`);
     const done = tasks.filter(t => t.status === "done"), pending = tasks.filter(t => t.status !== "done");
     const todo = pending.length ? pending.map(showTask).join("") : `<p class="empty">${tasks.length ? "Everything here is done. Nice work!" : "There are no Tasks in this List yet."}</p>`;
     const removed = (list.removedTasks || []).length ? `<section><h2>Removed</h2>${list.removedTasks!.map(r=>`<article><strong>${esc(r.title)}</strong> <span class="badge">Removed</span> ${timeTag(r.removedAt)}</article>`).join("")}</section>` : "";
@@ -307,17 +351,31 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   for (const action of ["status", "note"] as const) app.post(`/l/:code/tasks/:id/${action}`, async (request, reply) => {
     const { code, id } = request.params as Params; const assignment = await activeAssignment(ctx, code); if (!assignment) return inactiveLink(ctx, code, reply);
+    if (!assignment.personId) return fail(reply, 403, "Enter your name first.");
     const taskId = parseId(id); if (!taskId) return fail(reply, 404, "Task not found.");
-    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId }); if (!task) return fail(reply, 404, "Task not found.");
+    const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId, ...live }); if (!task) return fail(reply, 404, "Task not found.");
     const form = parseForm(request.body);
     if (action === "status") {
       const status = field(form, "status"), note = field(form, "note"); if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
-      const person = await ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId });
+      const person = await ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live });
       const error = await statusChange(ctx, task, status as TaskStatus, note, person ? { name: person.name, personId: person._id } : undefined); if (error) return fail(reply, 400, error);
     } else {
       const note = field(form, "note"); if (!textLimit(note, 2000)) return fail(reply, 400, "Note is too long.");
       await ctx.store.tasks.updateOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId }, { $set: { note, updatedAt: ctx.now() } });
       await recordEvent(ctx, assignment.ownerId, "task.note", { listId: assignment.listId, taskId, personId: assignment.personId, fromValue: task.note, toValue: note });
+    }
+    return redirect(reply, `/l/${code}`);
+  });
+  app.post("/l/:code/name", async (request, reply) => {
+    const code = (request.params as Params).code; const assignment = await activeAssignment(ctx, code); if (!assignment) return inactiveLink(ctx, code, reply);
+    if (!assignment.personId) {
+      const name = field(parseForm(request.body), "person"); if (!name || !textLimit(name, 200)) return fail(reply, 400, "Enter your name.");
+      const nameLower = name.toLowerCase(); let person = await ctx.store.people.findOne({ ownerId: assignment.ownerId, nameLower, ...live }), created = false;
+      if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId: assignment.ownerId, name, nameLower }); created = true; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId: assignment.ownerId, nameLower, ...live }); } }
+      if (!person) return fail(reply, 500, "Could not save name.");
+      const bound = await ctx.store.assignments.updateOne({ _id: assignment._id, active: true, personId: { $exists: false } }, { $set: { personId: person._id } });
+      if (!bound.modifiedCount && created) await ctx.store.people.deleteOne({ _id: person._id, ownerId: assignment.ownerId });
+      if (bound.modifiedCount) { const list = await ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }); await recordEvent(ctx, assignment.ownerId, "assignment.claim", { listId: assignment.listId, personId: person._id, summary: `${person.name} claimed ${list?.name || "a List"}` }); }
     }
     return redirect(reply, `/l/${code}`);
   });
@@ -333,7 +391,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     if (counted) {
       const first = await ctx.store.assignments.findOneAndUpdate({ _id: assignment._id, active: true, firstViewedAt: { $exists: false } }, { $set: { firstViewedAt: ctx.now(), lastViewedAt: ctx.now() }, $inc: { viewCount: 1 } });
       if (first) {
-        const [person, list] = await Promise.all([ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId }), ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId })]);
+        const [person, list] = await Promise.all([ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live }), ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live })]);
         await recordEvent(ctx, assignment.ownerId, "assignment.opened", { listId: assignment.listId, personId: assignment.personId, summary: `${person?.name || "Someone"} opened ${list?.name || "a List"}` });
       }
       else await ctx.store.assignments.updateOne({ _id: assignment._id, active: true }, { $set: { lastViewedAt: ctx.now() }, $inc: { viewCount: 1 } });
@@ -343,20 +401,22 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return;
     const query = request.query as { person?: string; tag?: string; status?: string };
-    const [people, lists, tasks, assignments, unread] = await Promise.all([ctx.store.people.find({ ownerId: owner._id }).toArray(), ctx.store.lists.find({ ownerId: owner._id }).toArray(), ctx.store.tasks.find({ ownerId: owner._id }).toArray(), ctx.store.assignments.find({ ownerId: owner._id, active: true }).toArray(), ctx.store.events.countDocuments({ ownerId: owner._id, seq: { $gt: owner.lastSeenEventId } })]);
+    const [people, lists, tasks, assignments, unread] = await Promise.all([ctx.store.people.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.lists.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, ...live }).toArray(), ctx.store.assignments.find({ ownerId: owner._id, active: true }).toArray(), ctx.store.events.countDocuments({ ownerId: owner._id, seq: { $gt: owner.lastSeenEventId } })]);
     const shown = (t: TaskDoc) => (!query.tag || t.tags.includes(query.tag)) && (!query.status || t.status === query.status);
     const filtered = Boolean(query.person || query.tag || query.status);
     const sections = people.filter(p => !query.person || p._id.toHexString() === query.person).map(p => {
-      const mine = assignments.filter(a => a.personId.equals(p._id) && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(a.listId) && shown(t))));
-      const cards = mine.map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); const visible = all.filter(shown); return `<article><a href="/assign/lists/${a.listId}">${esc(list?.name)}</a> · ${all.filter(t => t.status === "done").length} of ${all.length} done · ${a.lastViewedAt ? `Viewed ${timeTag(a.lastViewedAt)}` : "Not opened yet"}${visible.length ? `<ul class="task-lines">${visible.map(t => `<li><span class="${t.status}">${esc(t.title)}</span> ${badge(t.status)}${t.note ? ` ${esc(t.note)}` : ""}</li>`).join("")}</ul>` : ""}</article>`; }).join("");
+      const mine = assignments.filter(a => a.personId?.equals(p._id) && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(a.listId) && shown(t))));
+      const cards = mine.map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); const visible = all.filter(shown); return `<article><a href="${boardPath(a.listId)}">${esc(list?.name)}</a> · ${all.filter(t => t.status === "done").length} of ${all.length} done · ${a.lastViewedAt ? `Viewed ${timeTag(a.lastViewedAt)}` : "Not opened yet"}${visible.length ? `<ul class="task-lines">${visible.map(t => `<li><span class="${t.status}">${esc(t.title)}</span> ${badge(t.status)}${t.note ? ` ${esc(t.note)}` : ""}</li>`).join("")}</ul>` : ""}</article>`; }).join("");
       return `<section><h2>${esc(p.name)}</h2>${cards || `<p class="empty">${filtered ? "Nothing matches these filters." : "No active Lists."}</p>`}</section>`;
     }).join("");
-    const unassigned = query.person ? [] : tasks.filter(t => !t.listId && shown(t));
+    const awaiting = query.person || filtered ? "" : assignments.filter(a => !a.personId).map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); return `<article><a href="${boardPath(a.listId)}">${esc(list?.name)}</a> · <span class="badge">Awaiting name</span> · ${all.length} Tasks</article>`; }).join("");
+    const used = new Set(tasks.filter(t => t.kind === "copy" && t.templateId).map(t => String(t.templateId)));
+    const unassigned = query.person ? [] : tasks.filter(t => t.kind === "template" && !used.has(String(t._id)) && shown(t));
     const drafts = query.person ? [] : lists.filter(l => l.status === "draft" && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(l._id) && shown(t))));
     const option = (value: string, label: string, current?: string) => `<option value="${esc(value)}"${value === (current || "") ? " selected" : ""}>${esc(label)}</option>`;
     const filters = `<form class="filters" role="search" aria-label="Filter the Board"><div class="field"><label for="filter-person">Person</label><select id="filter-person" name="person">${option("", "All people", query.person)}${people.map(p => option(p._id.toHexString(), p.name, query.person)).join("")}</select></div><div class="field"><label for="filter-tag">Tag</label><input id="filter-tag" name="tag" value="${esc(query.tag || "")}"></div><div class="field"><label for="filter-status">Status</label><select id="filter-status" name="status">${option("", "All statuses", query.status)}${STATUSES.map(s => option(s, statusLabel[s], query.status)).join("")}</select></div><div class="actions"><button>Filter</button>${filtered ? '<a href="/assign">Clear filters</a>' : ""}</div></form>`;
-    const welcome = !tasks.length && !lists.length ? '<section><h2>Get started</h2><ol><li><a href="/assign/tasks">Add Tasks</a> you want done.</li><li><a href="/assign/lists">Group them into a List</a>.</li><li>Assign the List to someone and send them its link. Their progress shows up here.</li></ol></section>' : "";
-    const body = `${welcome}${filters}<p><a href="/assign/feed">Activity (${unread} unread)</a></p>${sections}${query.person ? "" : `<section><h2>Draft Lists</h2>${drafts.map(l => `<p><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="muted">· not assigned yet</span></p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : "No draft Lists."}</p>`}</section><section><h2>Unassigned Tasks</h2>${unassigned.map(t => `<p>${taskLink(t)}</p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : tasks.length ? "Every Task is in a List." : "No Tasks yet."}</p>`}</section>`}`;
+    const welcome = !tasks.length && !lists.length ? '<section><h2>Get started</h2><ol><li><a href="/assign/tasks">Add Tasks</a> you want done.</li><li><a href="/assign/tasks">Group them into a List</a>.</li><li>Assign the List to someone and send them its link. Their progress shows up here.</li></ol></section>' : "";
+    const body = `${welcome}${filters}<p><a href="/assign/feed">Activity (${unread} unread)</a></p>${sections}${awaiting ? `<section><h2>Awaiting name</h2>${awaiting}</section>` : ""}${query.person ? "" : `<section><h2>Draft Lists</h2>${drafts.map(l => `<p><a href="${boardPath(l._id)}">${esc(l.name)}</a> <span class="muted">· not assigned yet</span></p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : "No draft Lists."}</p>`}</section><section><h2>Unassigned Tasks</h2>${unassigned.map(t => `<p>${taskLink(t)}</p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : tasks.length ? "Every Task is in a List." : "No Tasks yet."}</p>`}</section>`}`;
     return send(reply, "Board", body, { live: "/assign/events", current: "/assign" });
   });
   app.get("/assign/feed", async (request, reply) => {
@@ -368,6 +428,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
       const list = lists.find(l => l._id.equals(event.listId || new ObjectId()))?.name || "List";
       const person = people.find(p => p._id.equals(event.personId || new ObjectId()))?.name || "Someone";
       if (event.kind === "assignment.opened") return `${person} opened ${list}`;
+      if (event.kind === "assignment.claim") return `${person} claimed ${list}`;
       if (event.kind === "list.complete") return `${list} complete`;
       if (event.kind === "task.status") return `${task}: ${event.toValue}`;
       if (event.kind === "task.create") return `Created ${task}`;
@@ -380,43 +441,43 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     return send(reply, "Activity", items || '<p class="empty">No activity yet. Changes to your Tasks and Lists, and updates from the people you assign, show up here.</p>', { live: "/assign/events", current: "/assign/feed" });
   });
   app.get("/assign/people", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const people = await ctx.store.people.find({ ownerId: owner._id }).toArray();
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const people = await ctx.store.people.find({ ownerId: owner._id, ...live }).toArray();
     const body = (await Promise.all(people.map(async p => `<article class="row"><span><strong>${esc(p.name)}</strong> <span class="muted">· ${plural(await ctx.store.assignments.countDocuments({ ownerId: owner._id, personId: p._id, active: true }), "active link")}</span></span><a href="/assign/people/${p._id}/delete" aria-label="Delete ${esc(p.name)}">Delete…</a></article>`))).join("");
-    return send(reply, "People", body || '<p class="empty">No people yet. People are added when you <a href="/assign/lists">assign a List</a> to someone.</p>', { current: "/assign/people" });
+    return send(reply, "People", body || '<p class="empty">No people yet. People are added when you <a href="/assign/tasks">assign a List</a> to someone.</p>', { current: "/assign/people" });
   });
   app.get("/assign/tasks/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
     const assignment = task.listId ? await ctx.store.assignments.findOne({ ownerId: owner._id, listId: task.listId, active: true }) : null;
-    const person = assignment ? await ctx.store.people.findOne({ _id: assignment.personId, ownerId: owner._id }) : null;
+    const person = assignment ? await ctx.store.people.findOne({ _id: assignment.personId, ownerId: owner._id, ...live }) : null;
     return send(reply, `Delete ${task.title}?`, confirmDelete(`This can't be undone.${person ? ` It also removes the Task from ${esc(person.name)}'s link.` : ""}`, "Delete Task", `/assign/tasks/${task._id}`), { current: "/assign/tasks" });
   });
   app.post("/assign/tasks/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
-    await ctx.store.tasks.deleteOne({ _id: task._id, ownerId: owner._id });
-    if (task.listId) await removedTask(ctx, task);
+    await ctx.store.tasks.updateOne({ _id: task._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: task.kind === "copy" ? "removed" : "template-deleted" } });
+    if (task.kind === "copy" && task.listId) await removedTask(ctx, task);
     await recordEvent(ctx, owner._id, "task.delete", { taskId: task._id, listId: task.listId, fromValue: task.title }); return redirect(reply, "/assign/tasks");
   });
   app.get("/assign/lists/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
-    const count = await ctx.store.tasks.countDocuments({ ownerId: owner._id, listId: list._id }); const active = await ctx.store.assignments.countDocuments({ ownerId: owner._id, listId: list._id, active: true });
-    return send(reply, `Delete ${list.name}?`, confirmDelete(deleteListMessage(active, count), "Delete List", `/assign/lists/${list._id}`), { current: "/assign/lists" });
+    const count = await ctx.store.tasks.countDocuments({ ownerId: owner._id, listId: list._id, ...live }); const active = await ctx.store.assignments.countDocuments({ ownerId: owner._id, listId: list._id, active: true });
+    return send(reply, `Delete ${list.name}?`, confirmDelete(deleteListMessage(active, count), "Delete List", boardPath(list._id)), { current: "/assign/tasks" });
   });
   app.post("/assign/lists/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     await ctx.store.assignments.updateMany({ ownerId: owner._id, listId: list._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
-    await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list._id }, { $unset: { listId: "" } }); await ctx.store.lists.deleteOne({ _id: list._id, ownerId: owner._id });
-    await recordEvent(ctx, owner._id, "list.delete", { listId: list._id }); return redirect(reply, "/assign/lists");
+    await ctx.store.tasks.updateMany({ ownerId: owner._id, listId: list._id, ...live }, { $set: { deletedAt: ctx.now(), deleteReason: "list-deleted" } }); await ctx.store.lists.updateOne({ _id: list._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "list-deleted" } });
+    await recordEvent(ctx, owner._id, "list.delete", { listId: list._id }); return redirect(reply, boardPath());
   });
   app.get("/assign/people/:id/delete", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id }); if (!person) return fail(reply, 404, "Person not found.");
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id, ...live }); if (!person) return fail(reply, 404, "Person not found.");
     const count = await ctx.store.assignments.countDocuments({ ownerId: owner._id, personId: person._id, active: true }); return send(reply, `Delete ${person.name}?`, confirmDelete(`Revokes ${plural(count, "active link")}. Their Lists go back to drafts and keep their Tasks.`, "Delete Person", "/assign/people"), { current: "/assign/people" });
   });
   app.post("/assign/people/:id/delete", async (request, reply) => {
-    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id }); if (!person) return fail(reply, 404, "Person not found.");
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const id = idFrom(request); const person = id && await ctx.store.people.findOne({ _id: id, ownerId: owner._id, ...live }); if (!person) return fail(reply, 404, "Person not found.");
     const active = await ctx.store.assignments.find({ ownerId: owner._id, personId: person._id, active: true }).toArray();
     await ctx.store.assignments.updateMany({ ownerId: owner._id, personId: person._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
     await ctx.store.lists.updateMany({ ownerId: owner._id, _id: { $in: active.map(a => a.listId) } }, { $set: { status: "draft" } });
-    await ctx.store.people.deleteOne({ _id: person._id, ownerId: owner._id });
+    await ctx.store.people.updateOne({ _id: person._id, ownerId: owner._id }, { $set: { deletedAt: ctx.now(), deleteReason: "person-deleted", nameLower: `${person.nameLower}\u0000deleted:${person._id}` } });
     for (const assignment of active) await recordEvent(ctx, owner._id, "person.delete", { personId: person._id, listId: assignment.listId });
     return redirect(reply, "/assign/people");
   });
