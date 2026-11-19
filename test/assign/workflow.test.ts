@@ -91,22 +91,19 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/revoke`);
     expect((await app.inject({ method: "GET", url: link })).body).toContain("no longer available");
   });
-  it("offers both Task layouts while preserving tag filtering and Task links", async () => {
+  it("keeps tag filtering and Task links on the Templates column", async () => {
     const owner = browser(); await owner.login("layouts@example.com");
     await owner.post("/assign/tasks", { title: "Pack books", tags: "move" });
     await owner.post("/assign/tasks", { title: "Paint wall", tags: "repair" });
     const store = await openAssignStore(db);
     const task = (await store.tasks.findOne({ title: "Pack books" }))!;
     const html = (await owner.get("/assign/tasks?tag=move")).body;
-    expect(html).toContain('aria-label="Task view"');
-    expect(html).toContain('data-task-view="list"');
-    expect(html).toContain('data-task-view="grid"');
     expect(html).toContain(`href="/assign/tasks/${task._id}"`);
     expect(html).toContain('name="tag" value="move"');
     expect(html).not.toContain("Paint wall");
     const empty = (await owner.get("/assign/tasks?tag=missing")).body;
     expect(empty).toContain("No Tasks tagged");
-    expect(empty).not.toContain('aria-label="Task view"');
+    expect(empty).not.toContain("Pack books");
   });
   it("rejects CSRF failures and another Owner's Task ID", async () => {
     const one = browser(); await one.login("one@example.com");
@@ -157,7 +154,7 @@ describe("Task assignment workflow", () => {
     await owner.post("/assign/tasks", { title: "Paint wall" });
     const store = await openAssignStore(db); const task = (await store.tasks.findOne({ title: "Paint wall" }))!;
     await owner.post("/assign/lists", { name: "Room", taskIds: task._id.toHexString() });
-    expect((await owner.get("/assign/lists")).body).toContain("already in Room");
+    expect((await owner.get("/assign/tasks")).body).toMatch(/Paint wall[\s\S]*?in 1 list/);
     const list = (await store.lists.findOne({ name: "Room" }))!;
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sara" });
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "sara" });
@@ -295,8 +292,8 @@ describe("Task assignment workflow", () => {
     expect((await owner.get(`/assign/tasks/${task._id}/delete`)).body).toContain("Omar's link");
     await owner.post(`/assign/tasks/${task._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("Carry");
-    const listPage = (await owner.get(`/assign/lists/${list._id}`)).body;
-    expect(listPage).toMatch(/<dialog id="delete-list"[^>]*>.*Revokes 1 active link and returns 0 Tasks.*<form method="post" action="\/assign\/lists\/[a-f\d]{24}\/delete" class="actions"><input type="hidden" name="csrf"/s);
+    const listPage = (await owner.get("/assign/tasks")).body;
+    expect(listPage).toMatch(/<dialog id="delete-list-[a-f\d]{24}"[^>]*>.*Revokes 1 active link and returns 0 Tasks.*<form method="post" action="\/assign\/lists\/[a-f\d]{24}\/delete" class="actions"><input type="hidden" name="csrf"/s);
     expect((await owner.get(`/assign/lists/${list._id}/delete`)).body).toContain("Revokes 1 active link and");
     await owner.post(`/assign/lists/${list._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("no longer available");
@@ -369,7 +366,7 @@ describe("Task assignment workflow", () => {
       const { owner, store, id, tid } = await seedTasks("draft@example.com", ["A", "B"]);
       const reply = await owner.post("/assign/lists", { name: "Prep", taskIds: [await tid("A"), await tid("B")] });
       const list = (await store.lists.findOne({ name: "Prep" }))!;
-      expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
+      expect(reply.headers.location).toBe(`/assign/tasks?list=${list._id}#list-${list._id}`);
       expect(list.status).toBe("draft"); expect(list.firstAssignedAt).toBeUndefined();
       expect(await store.assignments.countDocuments({ listId: list._id })).toBe(0);
       expect(await store.tasks.countDocuments({ listId: list._id })).toBe(2);
@@ -378,10 +375,10 @@ describe("Task assignment workflow", () => {
       const { owner, store, id, tid } = await seedTasks("assign@example.com", ["A"]);
       const reply = await owner.post("/assign/lists", { name: "Go", taskIds: await tid("A"), person: "Nadia" });
       const list = (await store.lists.findOne({ name: "Go" }))!;
-      expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
+      expect(reply.headers.location).toBe(`/assign/tasks?list=${list._id}#list-${list._id}`);
       const first = list.firstAssignedAt; expect(first).toBeInstanceOf(Date); expect(list.status).toBe("active");
       expect(await store.assignments.countDocuments({ listId: list._id, active: true })).toBe(1);
-      expect((await owner.get(`/assign/lists/${list._id}`)).body).not.toContain("Additional task");
+      expect((await owner.get("/assign/tasks")).body).not.toContain("Additional task");
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Other" });
       expect((await store.lists.findOne({ _id: list._id }))!.firstAssignedAt).toEqual(first);
     });
@@ -400,28 +397,26 @@ describe("Task assignment workflow", () => {
       expect((await owner.post("/assign/lists", { name: "Third", taskIds: copy._id.toHexString() })).statusCode).toBe(400);
       expect(await store.lists.countDocuments({})).toBe(1);
     });
-    it("shows a disabled checkbox labelled with the List for copies and keeps Templates selectable after they were added", async () => {
+    it("keeps Templates selectable after they were added to a List and labels how many Lists hold them", async () => {
       const { owner, tid } = await seedTasks("disabled@example.com", ["Taken", "Free"]);
       await owner.post("/assign/lists", { name: "Mine", taskIds: await tid("Taken") });
       const html = (await owner.get("/assign/tasks")).body;
-      const taken = html.match(/<input type="checkbox"[^>]*disabled[^>]*>[^<]*Taken[\s\S]{0,200}/)?.[0] || "";
-      expect(taken).toContain("Mine");
-      expect(html).toMatch(/<input type="checkbox" name="taskIds" value="[0-9a-f]{24}" form="select-tasks">/);
+      expect(html).not.toMatch(/<input type="checkbox"[^>]*disabled/);
+      expect(html).toMatch(/Taken[\s\S]*?in 1 list/);
+      expect(html).toMatch(/Free[\s\S]*?in 0 lists/);
       expect(html.match(/name="taskIds"[^>]*form="select-tasks"/g)).toHaveLength(2);
     });
-    it("renders a labelled sidebar of every List with status and done count, kept current", async () => {
-      const { owner, store, id, tid } = await seedTasks("sidebar@example.com", ["A", "B", "C"]);
+    it("renders every List in the labelled Lists panel with pill and done count, kept current", async () => {
+      const { owner, store, tid } = await seedTasks("sidebar@example.com", ["A", "B", "C"]);
       await owner.post("/assign/lists", { name: "Drafty", taskIds: await tid("C") });
       await owner.post("/assign/lists", { name: "Sent", taskIds: [await tid("A"), await tid("B")], person: "Zed" });
       const taskA = (await store.tasks.findOne({ title: "A", kind: "copy" }))!;
       await owner.post(`/assign/tasks/${taskA._id}/status`, { status: "done" });
       const html = (await owner.get("/assign/tasks")).body;
-      const sidebar = html.match(/<(?:nav|aside)[^>]*class="list-sidebar"[\s\S]*?<\/(?:nav|aside)>/)![0];
-      expect(sidebar).toMatch(/aria-label(?:ledby)?=/);
-      expect(sidebar).toMatch(/Sent[\s\S]*?Assigned[\s\S]*?1\/2/);
-      expect(sidebar).toMatch(/Drafty[\s\S]*?Draft[\s\S]*?0\/1/);
-      const list = (await store.lists.findOne({ name: "Sent" }))!;
-      expect(sidebar).toContain(`href="/assign/lists/${list._id}"`);
+      const panel = html.match(/<aside[^>]*class="lists-panel"[\s\S]*?<\/aside>/)![0];
+      expect(panel).toMatch(/aria-labelledby=/);
+      expect(panel).toMatch(/Sent[\s\S]*?Zed[\s\S]*?value="1" max="2"[\s\S]*?2 tasks/);
+      expect(panel).toMatch(/Drafty[\s\S]*?Not shared[\s\S]*?value="0" max="1"[\s\S]*?1 task\b/);
       expect(html).toContain("new EventSource");
     });
   });
@@ -432,9 +427,9 @@ describe("Task assignment workflow", () => {
     const created = await owner.post("/assign/lists", { name: "Selected", taskIds: initial._id.toHexString(), person: "Sam" });
     expect(created.statusCode).toBe(303);
     const list = (await store.lists.findOne({ name: "Selected" }))!, assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
-    expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("Copy link");
+    expect((await owner.get("/assign/tasks")).body).toContain("Copy link");
     expect((await owner.post(`/assign/lists/${list._id}/add`, { taskId: later._id.toHexString() })).statusCode).toBe(303);
-    expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("Additional task");
+    expect((await owner.get("/assign/tasks")).body).toContain("Additional task");
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("Additional task");
     await owner.post(`/assign/lists/${list._id}/remove`, { taskId: (await copyFor(store, later))._id.toHexString() });
     const removed = (await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body;
@@ -455,7 +450,7 @@ describe("Task assignment workflow", () => {
     expect(await store.assignments.countDocuments({ listId: list._id })).toBe(1);
     expect(await store.people.countDocuments({})).toBe(0);
     expect((await owner.get("/assign")).body).toContain("Awaiting name");
-    expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("Copy link");
+    expect((await owner.get("/assign/tasks")).body).toContain("Copy link");
     const path = new URL(url).pathname;
     const firstOpen = await app.inject({ method: "GET", url: path });
     expect(firstOpen.body).toContain('name="person"'); expect(firstOpen.body).not.toContain("Water plants");
@@ -532,8 +527,10 @@ describe("Task assignment workflow", () => {
     expect((await owner.post("/assign/tasks", { title: "Due", deadlineDate: "2020-01-02", timezoneOffset: "-240" })).statusCode).toBe(303);
     const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Due" }))!;
     expect(task.deadline?.toISOString()).toBe("2020-01-02T19:59:00.000Z");
+    expect((await owner.get("/assign/tasks")).body).not.toContain("Overdue"); // a Template is never overdue
+    await owner.post("/assign/lists", { name: "Due list", taskIds: task._id.toHexString() });
     expect((await owner.get("/assign/tasks")).body).toContain("Overdue");
-    await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
+    await owner.post(`/assign/tasks/${(await copyFor(store, task))._id}/status`, { status: "done" });
     expect((await owner.get("/assign/tasks")).body).not.toContain("Overdue");
     const invalid = await owner.post("/assign/tasks", { title: "Bad", deadlineDate: "2020-99-99" });
     expect(invalid.statusCode).toBe(400); expect(invalid.body).toContain("data-reopen"); expect(invalid.body).toContain("Bad");
@@ -548,17 +545,17 @@ describe("Task assignment workflow", () => {
       const list = (await store.lists.findOne({ name: "L" }))!, task = await copyFor(store, template);
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
       const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
-      // The Owner's Tasks page row for the copy (the Template is never done, so it would stay Overdue).
-      const ownerRow = async () => ((await owner.get("/assign/tasks")).body.split('<article class="task-row">').find((part: string) => part.includes(`/assign/tasks/${task._id}`)) || "");
+      // The Owner's board row for the copy (the Template is never done, so it would stay Overdue).
+      const ownerRow = async () => ((await owner.get("/assign/tasks")).body.split('<li class="copy-item').find((part: string) => part.includes(`/assign/tasks/${task._id}`)) || "");
       return { owner, store, task, ownerRow, link: `/l/${assignment.code}` };
     }
-    it("offers Add Task as a button opening a dialog with Title, Tags, Instructions and Deadline", async () => {
+    it("offers a quick-add row with Title, and Tags, Instructions and Deadline under More fields", async () => {
       const owner = browser(); await owner.login("dialog@example.com");
       const body = (await owner.get("/assign/tasks")).body;
-      expect(body).toMatch(/<button[^>]*data-dialog="add-task"[^>]*>Add Task<\/button>/);
-      const dialog = body.match(/<dialog id="add-task"[\s\S]*?<\/dialog>/)![0];
-      for (const name of ["title", "tags", "instruction", "deadlineDate", "deadlineTime"]) expect(dialog).toContain(`name="${name}"`);
-      expect(dialog).toContain('maxlength="200"'); expect(dialog).toContain('maxlength="2000"');
+      const form = body.match(/<form class="quick-add"[\s\S]*?<\/form>/)![0];
+      for (const name of ["title", "tags", "instruction", "deadlineDate", "deadlineTime", "timezoneOffset"]) expect(form).toContain(`name="${name}"`);
+      expect(form).toContain('maxlength="200"'); expect(form).toContain('maxlength="2000"');
+      expect(form).toMatch(/<details class="more-fields">/);
     });
     it("keeps an explicit time as the Owner's local time and rejects unparseable Deadlines", async () => {
       const owner = browser(); await owner.login("explicit@example.com");
@@ -585,9 +582,9 @@ describe("Task assignment workflow", () => {
       await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
       for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) expect(body).not.toContain("Overdue");
     });
-    it("marks an Overdue Task in the collapsed summary on both pages, never a Done one", async () => {
+    it("marks an Overdue Task in the collapsed summary and the board row, never a Done one", async () => {
       const { owner, task, link, ownerRow } = await dueTask();
-      const summaryOf = (body: string) => body.match(/<summary>[\s\S]*?<\/summary>/)![0];
+      const summaryOf = (body: string) => body.match(/<summary>[\s\S]*?<\/summary>/)?.[0] ?? body.match(/<span class="copy-main">[\s\S]*?<\/span>/)![0];
       for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) {
         expect(summaryOf(body)).toContain("Overdue"); expect(summaryOf(body)).toMatch(/class="[^"]*overdue/);
       }
@@ -698,17 +695,17 @@ describe("Task assignment workflow", () => {
       const assigneePage = async () => (await app.inject({ method: "GET", url: link })).body;
       const ownerPage = async () => (await owner.get("/assign/tasks")).body;
       // Only the Owner's row for the copy: the Template above it never has a status.
-      const ownerCopyRow = async () => ((await ownerPage()).split('<article class="task-row">').find((part: string) => part.includes(`/assign/tasks/${task._id}`)) || "").split("</article>")[0]!;
+      const ownerCopyRow = async () => ((await ownerPage()).split('<li class="copy-item').find((part: string) => part.includes(`/assign/tasks/${task._id}`)) || "").split("</li>")[0]!;
       return { owner, store, task, list, assigneePost, assigneePage, ownerPage, ownerCopyRow };
     }
-    it("offers exactly the valid status buttons on both pages", async () => {
+    it("offers exactly the valid status buttons to the Assignee and a single done toggle on the Owner's board row", async () => {
       const scene = await assigned();
-      const bothPages = async () => [statusButtons(await scene.ownerCopyRow()), statusButtons(await scene.assigneePage())];
-      expect(await bothPages()).toEqual([["Blocked", "Done"], ["Blocked", "Done"]]);
+      const toggle = async () => (await scene.ownerCopyRow()).match(/<button class="check" name="status" value="(\w+)"/)![1];
+      expect([await toggle(), statusButtons(await scene.assigneePage())]).toEqual(["done", ["Blocked", "Done"]]);
       await scene.assigneePost("blocked");
-      expect(await bothPages()).toEqual([["Done", "Reopen"], ["Done", "Reopen"]]);
+      expect([await toggle(), statusButtons(await scene.assigneePage())]).toEqual(["done", ["Done", "Reopen"]]);
       await scene.assigneePost("done");
-      expect(await bothPages()).toEqual([["Reopen"], ["Reopen"]]);
+      expect([await toggle(), statusButtons(await scene.assigneePage())]).toEqual(["open", ["Reopen"]]);
     });
     it("lets Blocked be posted as a plain form submit", async () => {
       const scene = await assigned();
@@ -739,18 +736,15 @@ describe("Task assignment workflow", () => {
       }
       expect(rowParts(await scene.assigneePage()).body).toContain("Need paint");
     });
-    it("collapses Tasks to checkbox, title, badge and buttons for the Owner", async () => {
+    it("shows a Template as one row with checkbox, title and list count, keeping its details off the board", async () => {
       const scene = await assigned();
       await scene.owner.post("/assign/tasks", { title: "Loose task", instruction: "Secret detail" });
       const html = await scene.ownerPage();
-      const loose = html.slice(html.indexOf("Loose task") - 400);
-      expect(loose).toMatch(/type="checkbox"[^>]*>Select Loose task/);
-      const { summary, body } = rowParts(loose);
-      expect(summary).toContain("Loose task");
-      expect(summary).toContain("badge");
-      expect(summary).not.toContain("Secret detail");
-      expect(body).toContain("Secret detail");
-      expect(outsideDetails(loose)).toContain('value="done"');
+      const loose = html.slice(html.indexOf('<li class="tpl-row"', html.indexOf("Loose task") - 600));
+      const row = loose.slice(0, loose.indexOf("</li>"));
+      expect(row).toMatch(/<input type="checkbox" name="taskIds"[^>]*>[\s\S]*Select Loose task/);
+      expect(row).toContain("Loose task"); expect(row).toContain("in 0 lists");
+      expect(html).not.toContain("Secret detail");
     });
   });
 
@@ -771,20 +765,20 @@ describe("Task assignment workflow", () => {
       const list = (await store.lists.findOne({ name: "Tagged" }))!;
       await owner.post(`/assign/lists/${list._id}/add`, { taskId: await tid("Late") });
       const additional = (html: string) => (html.match(/Additional task/g) || []).length;
-      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(0);
+      expect(additional((await owner.get("/assign/tasks")).body)).toBe(0);
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sam" });
       expect(additional(await linkPage(store, list._id))).toBe(0);
       await owner.post("/assign/tasks", { title: "After" });
       await owner.post(`/assign/lists/${list._id}/add`, { taskId: await tid("After") });
-      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
+      expect(additional((await owner.get("/assign/tasks")).body)).toBe(1);
       expect(additional(await linkPage(store, list._id))).toBe(1);
       await owner.post(`/assign/tasks/${(await task("After"))._id}/status`, { status: "done" });
-      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
+      expect(additional((await owner.get("/assign/tasks")).body)).toBe(1);
       expect(additional(await linkPage(store, list._id))).toBe(1);
       await owner.post(`/assign/lists/${list._id}/revoke`);
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Priya" });
       expect(additional(await linkPage(store, list._id))).toBe(1);
-      expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
+      expect(additional((await owner.get("/assign/tasks")).body)).toBe(1);
     });
 
     it("accepts a Template into any number of Lists but never a copy, from both entry points", async () => {
@@ -797,8 +791,8 @@ describe("Task assignment workflow", () => {
       expect((await owner.post(`/assign/lists/${one._id}/add`, { taskId: takenCopy })).statusCode).toBe(400);
       expect((await owner.post("/assign/lists/add-selected", { listId: one._id.toHexString(), taskIds: [takenCopy, await tid("Free")] })).statusCode).toBe(400);
       expect(await store.tasks.countDocuments({ listId: one._id })).toBe(1);
-      const picker = (await owner.get(`/assign/lists/${one._id}`)).body;
-      expect(picker).toContain(`value="${await tid("Free")}"`); expect(picker).toContain(`value="${await tid("Taken")}"`); expect(picker).not.toContain(`value="${takenCopy}"`);
+      const picker = (await owner.get("/assign/tasks")).body;
+      expect(picker).toContain(`value="${await tid("Free")}"`); expect(picker).toContain(`value="${await tid("Taken")}"`); expect(picker).not.toContain(`name="taskIds" value="${takenCopy}"`);
       expect((await owner.post(`/assign/lists/${one._id}/add`, { taskId: await tid("Taken") })).statusCode).toBe(303);
       expect((await owner.post("/assign/lists/add-selected", { listId: two._id.toHexString(), taskIds: await tid("Free") })).statusCode).toBe(303);
       expect((await store.tasks.findOne({ title: "Free", kind: "copy" }))!.listId).toEqual(two._id);
@@ -809,7 +803,7 @@ describe("Task assignment workflow", () => {
       const { owner } = await seedTasks("offer@example.com", ["Solo"]);
       await owner.post("/assign/lists", { name: "Existing" });
       const html = (await owner.get("/assign/tasks")).body;
-      expect(html).toContain("Add to List"); expect(html).toMatch(/<select name="listId">[^]*Existing/);
+      expect(html).toContain("Add to List"); expect(html).toMatch(/<select id="add-target" name="listId">[^]*Existing/);
     });
 
     it("makes a completed List not completed again when a Task is added", async () => {
@@ -880,7 +874,7 @@ describe("Task assignment workflow", () => {
       await owner.post(`/assign/tasks/${await id("Two")}/delete`);
       expect(await page(code)).toContain("1 of 1 done");
       expect((await owner.get("/assign")).body).toContain("1 of 1 done");
-      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("1 of 1 done");
+      expect((await owner.get("/assign/tasks")).body).toContain("1 of 1 done");
       expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeTruthy();
       expect(removedSection(await page(code))).toMatch(/Two[^]*Three|Three[^]*Two/);
     });
@@ -913,10 +907,11 @@ describe("Task assignment workflow", () => {
       expect(row.status).toBe("blocked"); expect(row.note).toBe("stuck");
       const list = (await store.lists.findOne({ name: "Chores" }))!, code = await activeCode(store, list._id);
       expect((await owner.get("/assign/tasks")).body).not.toContain(`/assign/tasks/${doomed._id}`);
-      expect((await owner.get("/assign/tasks")).body).toContain("All Tasks (3)"); // 2 Templates + 1 live copy; the removed copy is not counted
+      expect((await owner.get("/assign/tasks")).body).toContain('Templates <span class="muted">(2)</span>'); // the removed copy is not a Template
+      expect((await owner.get("/assign/tasks")).body).toContain('<span class="count">1 task</span>'); // and no longer counts in its List
       expect((await owner.get(`/assign/tasks/${doomed._id}`)).statusCode).toBe(404);
       expect((await owner.post(`/assign/tasks/${doomed._id}/status`, { status: "done" })).statusCode).toBe(404);
-      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 1 done)");
+      expect((await owner.get("/assign/tasks")).body).toContain("(0 of 1 done)");
       expect((await owner.get("/assign")).body).toContain("0 of 1 done");
       const link = (await app.inject({ method: "GET", url: `/l/${code}` })).body;
       expect(link).toContain("0 of 1 done");
@@ -952,7 +947,7 @@ describe("Task assignment workflow", () => {
       expect((await owner.get("/assign")).body).not.toContain("Zed");
       expect((await owner.get(`/assign/people/${old._id}/delete`)).statusCode).toBe(404);
       const list = (await store.lists.findOne({ name: "Mine" }))!;
-      expect((await owner.get(`/assign/lists/${list._id}`)).body).not.toContain("<option value=\"Zed\">");
+      expect((await owner.get("/assign/tasks")).body).not.toContain("<option value=\"Zed\">");
       expect((await owner.post(`/assign/lists/${list._id}/assign`, { person: "zed" })).statusCode).toBe(303);
       const again = (await store.assignments.findOne({ listId: list._id, active: true }))!;
       expect(again.personId!.equals(old._id)).toBe(false);
@@ -1023,7 +1018,7 @@ describe("Task assignment workflow", () => {
       expect((await owner.get("/assign/tasks")).body).toContain(`/assign/tasks/${tmpl._id}`);
       expect((await owner.get("/assign/tasks")).body).not.toContain(`/assign/tasks/${copy!._id}`);
       expect((await app.inject({ method: "GET", url: `/l/${code}` })).body).toMatch(/<h2>Removed<\/h2>[^]*Sweep/);
-      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 0 done)");
+      expect((await owner.get("/assign/tasks")).body).toContain("(0 of 0 done)");
       expect((await owner.post(`/assign/lists/${list._id}/add`, { taskId: tmpl._id.toHexString() })).statusCode).toBe(303);
       expect(await copiesOf(store, "Sweep")).toHaveLength(2);
     });
@@ -1044,7 +1039,7 @@ describe("Task assignment workflow", () => {
       expect(kept.deletedAt).toBeUndefined();
       const page = (await app.inject({ method: "GET", url: `/l/${code}` })).body;
       expect(page).toContain("Original"); expect(page).not.toContain("<h2>Removed</h2>");
-      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 1 done)");
+      expect((await owner.get("/assign/tasks")).body).toContain("(0 of 1 done)");
     });
 
     it("sends the Additional Task only to that List's Owner and Assignee streams when a Template is added", async () => {
@@ -1063,6 +1058,76 @@ describe("Task assignment workflow", () => {
         expect(await store.events.countDocuments({ kind: "list.add" })).toBe(1);
         expect((await store.events.findOne({ kind: "list.add" }))!.listId).toEqual(mine._id);
       } finally { mineStream.close(); otherStream.close(); }
+    });
+  });
+
+  describe("Single-page board", () => {
+    const section = (html: string, cls: string) => html.match(new RegExp(`<(section|aside)[^>]*class="${cls}"[\\s\\S]*?</\\1>`))?.[0] || "";
+    it("quick-add creates a Template that shows straight away in the Templates column, with a checkbox and an in-N-lists label", async () => {
+      const { owner } = await seedTasks("board-quick@example.com", []);
+      const added = await owner.post("/assign/tasks", { title: "Quick one" });
+      expect(added.statusCode).toBe(303); expect(added.headers.location).toBe("/assign/tasks");
+      const html = (await owner.get("/assign/tasks")).body;
+      expect(html).toMatch(/<form[^>]*action="\/assign\/tasks"[^>]*>[\s\S]*?<input[^>]*name="title"/);
+      const templates = section(html, "templates-panel");
+      expect(templates).toContain("Quick one");
+      expect(templates).toMatch(/<input type="checkbox" name="taskIds" value="[0-9a-f]{24}" form="select-tasks">/);
+      expect(templates).toContain("in 0 lists");
+    });
+    it("lists only Templates on the left and counts the Lists each one is in", async () => {
+      const { owner, tid } = await seedTasks("board-left@example.com", ["Shared", "Solo"]);
+      await owner.post("/assign/lists", { name: "One", taskIds: await tid("Shared") });
+      await owner.post("/assign/lists", { name: "Two", taskIds: await tid("Shared") });
+      const html = (await owner.get("/assign/tasks")).body;
+      const templates = section(html, "templates-panel");
+      expect(templates.match(/name="taskIds"/g)).toHaveLength(2);
+      expect(templates).toMatch(/Shared[\s\S]*?in 2 lists/);
+      expect(templates).toMatch(/Solo[\s\S]*?in 0 lists/);
+      expect(html).toMatch(/Tick tasks/);
+      expect(html).not.toMatch(/<a href="\/assign\/lists"/);
+    });
+    it("shows each List with pill, progress, count and expandable copies with done and remove controls", async () => {
+      const { owner, store, tid } = await seedTasks("board-right@example.com", ["A", "B"]);
+      await owner.post("/assign/lists", { name: "Plan", taskIds: [await tid("A"), await tid("B")] });
+      const list = (await store.lists.findOne({ name: "Plan" }))!;
+      let panel = section((await owner.get("/assign/tasks")).body, "lists-panel");
+      expect(panel).toContain("Not shared"); expect(panel).toContain("2 tasks");
+      expect(panel).toMatch(/<progress[^>]*value="0"[^>]*max="2"/);
+      expect(panel).toMatch(/<details[^>]*id="list-[0-9a-f]{24}"/);
+      const copyA = (await store.tasks.findOne({ title: "A", kind: "copy" }))!;
+      expect(panel).toContain(`action="/assign/tasks/${copyA._id}/status"`);
+      expect(panel).toMatch(new RegExp(`action="/assign/lists/${list._id}/remove"[\\s\\S]*?name="taskId" value="${copyA._id}"[\\s\\S]*?✕`));
+      await owner.post(`/assign/lists/${list._id}/link`);
+      expect(section((await owner.get("/assign/tasks")).body, "lists-panel")).toContain("Awaiting name");
+      await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
+      await owner.post(`/assign/tasks/${copyA._id}/status`, { status: "done" });
+      panel = section((await owner.get("/assign/tasks")).body, "lists-panel");
+      expect(panel).toContain("Omar"); expect(panel).not.toContain("Awaiting name");
+      expect(panel).toMatch(/<progress[^>]*value="1"[^>]*max="2"/);
+    });
+    it("opens the requested List and returns to the board after list and status requests", async () => {
+      const { owner, store, tid } = await seedTasks("board-back@example.com", ["A"]);
+      await owner.post("/assign/lists", { name: "Plan" });
+      const list = (await store.lists.findOne({ name: "Plan" }))!, target = `/assign/tasks?list=${list._id}#list-${list._id}`;
+      const added = await owner.post(`/assign/lists/${list._id}/add`, { taskId: await tid("A") });
+      expect(added.headers.location).toBe(target);
+      expect((await owner.get(target.split("#")[0]!)).body).toMatch(new RegExp(`<details[^>]*id="list-${list._id}"[^>]* open`));
+      const copy = (await store.tasks.findOne({ kind: "copy" }))!;
+      expect((await owner.post(`/assign/tasks/${copy._id}/status`, { status: "done", board: "1" })).headers.location).toBe(target);
+      expect((await owner.post(`/assign/lists/${list._id}/remove`, { taskId: copy._id.toHexString() })).headers.location).toBe(target);
+      expect((await owner.post("/assign/lists", { name: "Fresh" })).headers.location).toMatch(/^\/assign\/tasks\?list=[0-9a-f]{24}#list-/);
+    });
+    it("sends the old Lists and List-page URLs to the new page and drops the Lists nav item", async () => {
+      const { owner, store } = await seedTasks("board-old@example.com", []);
+      await owner.post("/assign/lists", { name: "Plan" });
+      const list = (await store.lists.findOne({ name: "Plan" }))!;
+      const index = await owner.get("/assign/lists");
+      expect(index.statusCode).toBe(303); expect(index.headers.location).toBe("/assign/tasks");
+      const old = await owner.get(`/assign/lists/${list._id}`);
+      expect(old.statusCode).toBe(303); expect(old.headers.location).toBe(`/assign/tasks?list=${list._id}#list-${list._id}`);
+      expect((await owner.get(`/assign/lists/${"0".repeat(24)}`)).statusCode).toBe(404);
+      const nav = (await owner.get("/assign/tasks")).body.match(/<nav aria-label="Task assignment">[\s\S]*?<\/nav>/)![0];
+      expect(nav).not.toContain("/assign/lists");
     });
   });
 

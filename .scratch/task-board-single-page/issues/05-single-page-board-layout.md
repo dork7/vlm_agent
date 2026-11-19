@@ -4,7 +4,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Quick-add creates a Template that appears in the list straight away.
 - [ ] Lists panel shows each List with pill, progress, count and expandable copies.
