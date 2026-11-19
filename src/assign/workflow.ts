@@ -118,6 +118,21 @@ async function removedTask(ctx: AssignContext, task: TaskDoc & { _id: ObjectId }
   await syncCompletion(ctx, task.ownerId, list._id);
 }
 
+function newCode() {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
+  while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
+  return code;
+}
+// The List's active Assignment, created with no Person if none exists yet. A lost race returns the winner's.
+async function ensureLink(ctx: AssignContext, ownerId: ObjectId, list: ListDoc & { _id: ObjectId }) {
+  const existing = await ctx.store.assignments.findOne({ ownerId, listId: list._id, active: true }); if (existing) return existing;
+  try { await ctx.store.assignments.insertOne({ ownerId, listId: list._id, code: newCode(), active: true, viewCount: 0 }); }
+  catch (error) { const winner = await ctx.store.assignments.findOne({ ownerId, listId: list._id, active: true }); if (winner) return winner; throw error; }
+  await ctx.store.lists.updateOne({ _id: list._id, ownerId }, { $set: { status: "active" } });
+  await ctx.store.lists.updateOne({ _id: list._id, ownerId, firstAssignedAt: { $exists: false } }, { $set: { firstAssignedAt: ctx.now() } });
+  await recordEvent(ctx, ownerId, "assignment.create", { listId: list._id });
+  return (await ctx.store.assignments.findOne({ ownerId, listId: list._id, active: true }))!;
+}
 async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectId, name: string) {
   let createdPersonId: ObjectId | undefined;
   let person = await ctx.store.people.findOne({ ownerId, nameLower: name.toLowerCase(), ...live });
@@ -125,8 +140,7 @@ async function assignList(ctx: AssignContext, ownerId: ObjectId, listId: ObjectI
   if (!person) throw new Error("Could not create Person");
   try {
     const previous = await ctx.store.assignments.findOne({ ownerId, listId, active: true });
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"; let code = "";
-    while (code.length < 10) for (const byte of randomBytes(20)) { if (byte < 248) code += alphabet[byte % 62]; if (code.length === 10) break; }
+    const code = newCode();
     if (previous) await ctx.store.assignments.updateMany({ ownerId, listId, active: true }, { $set: { active: false, revokedAt: ctx.now(), replacedAt: ctx.now() } });
     try { await ctx.store.assignments.insertOne({ ownerId, listId, personId: person._id, code, active: true, viewCount: 0 }); }
     catch (error) { if (previous) await ctx.store.assignments.updateOne({ _id: previous._id }, { $set: { active: true }, $unset: { revokedAt: "", replacedAt: "" } }); throw error; }
@@ -241,9 +255,9 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign/lists/:id", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     const [tasks, free, assignment, people] = await Promise.all([ctx.store.tasks.find({ ownerId: owner._id, listId: list._id, ...live }).toArray(), ctx.store.tasks.find({ ownerId: owner._id, ...live, listId: { $exists: false } }).toArray(), ctx.store.assignments.findOne({ ownerId: owner._id, listId: list._id, active: true }), ctx.store.people.find({ ownerId: owner._id, ...live }).toArray()]);
-    const assignee = assignment && people.find(p => p._id.equals(assignment.personId));
+    const assignee = assignment?.personId && people.find(p => p._id.equals(assignment.personId!));
     const done = tasks.filter(t => t.status === "done").length;
-    const shared = assignment ? `<p>Assigned to <strong>${esc(assignee?.name || "someone")}</strong> · ${assignment.lastViewedAt ? `Last opened ${timeTag(assignment.lastViewedAt)}` : "Not opened yet"}</p><div class="field"><label for="share-link">Link to send ${esc(assignee?.name || "them")}</label><div class="copy-row"><input id="share-link" readonly value="${esc(ctx.config.publicUrl)}/l/${assignment.code}"><button type="button" data-copy="share-link">Copy link</button></div><small class="hint" id="share-link-status" role="status"></small></div><form method="post" action="/assign/lists/${list._id}/revoke"><p class="hint">Revoking stops this link from working straight away. The Tasks stay in the List.</p><button class="danger">Revoke link</button></form>` : '<p class="hint">Not assigned yet. Assign it to get a link you can send.</p>';
+    const shared = assignment ? `<p>Assigned to <strong>${esc(assignee?.name || "(awaiting name)")}</strong> · ${assignment.lastViewedAt ? `Last opened ${timeTag(assignment.lastViewedAt)}` : "Not opened yet"}</p><div class="field"><label for="share-link">Link to send ${esc(assignee?.name || "them")}</label><div class="copy-row"><input id="share-link" readonly value="${esc(ctx.config.publicUrl)}/l/${assignment.code}"><button type="button" data-copy="share-link">Copy link</button></div><small class="hint" id="share-link-status" role="status"></small></div><form method="post" action="/assign/lists/${list._id}/revoke"><p class="hint">Revoking stops this link from working straight away. The Tasks stay in the List.</p><button class="danger">Revoke link</button></form>` : '<p class="hint">Not assigned yet. Assign it to get a link you can send.</p>';
     const assign = `<form method="post" action="/assign/lists/${list._id}/assign"><div class="field"><label for="person">${assignment ? "Reassign to" : "Assign to"}</label><small class="hint" id="person-hint">${assignment ? "Reassigning revokes the current link and makes a new one." : "Type a name. New names are added to People."}</small><input id="person" name="person" maxlength="200" list="people-names" autocomplete="off" aria-describedby="person-hint" required><datalist id="people-names">${people.map(p => `<option value="${esc(p.name)}">`).join("")}</datalist></div><button>${assignment ? "Reassign" : "Assign"}</button></form>`;
     const rows = tasks.length ? tasks.map(t => `<article class="row"><span>${taskLink(t)}${additionalTag(t,list)}</span><form method="post" action="/assign/lists/${list._id}/remove"><input type="hidden" name="taskId" value="${t._id}"><button class="secondary" aria-label="Remove ${esc(t.title)} from this List">Remove</button></form></article>`).join("") : '<p class="empty">No Tasks in this List yet.</p>';
     const add = free.length ? `<form method="post" action="/assign/lists/${list._id}/add"><fieldset><legend>Add Tasks</legend>${free.map(t=>`<label><input type="checkbox" name="taskIds" value="${t._id}">${esc(t.title)}</label>`).join("")}</fieldset><button>Add Tasks</button></form>` : '<p class="hint">Every Task is already in a List. <a href="/assign/tasks">Create a new Task</a> to add one here.</p>';
@@ -285,6 +299,10 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     try { await assignList(ctx, owner._id, list._id, name); } catch { return fail(reply, 500, "Could not assign List."); }
     return redirect(reply, `/assign/lists/${list._id}`);
   });
+  app.post("/assign/lists/:id/link", async (request, reply) => {
+    const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
+    try { const assignment = await ensureLink(ctx, owner._id, list); return reply.send({ url: `${ctx.config.publicUrl}/l/${assignment.code}` }); } catch { return fail(reply, 500, "Could not create link."); }
+  });
   app.post("/assign/lists/:id/revoke", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const list = await ownList(ctx, owner, request); if (!list) return fail(reply, 404, "List not found.");
     await ctx.store.assignments.updateMany({ ownerId: owner._id, listId: list._id, active: true }, { $set: { active: false, revokedAt: ctx.now() } });
@@ -297,7 +315,8 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     reply.header("X-Robots-Tag", "noindex");
     if (!assignment) return inactiveLink(ctx, code, reply);
     const [list, person, tasks] = await Promise.all([ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live }), ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live }), ctx.store.tasks.find({ ownerId: assignment.ownerId, listId: assignment.listId, ...live }).toArray()]);
-    if (!list || !person) return inactiveLink(ctx, code, reply);
+    if (!list) return inactiveLink(ctx, code, reply);
+    if (!person) return send(reply, list.name, `<form method="post" action="/l/${code}/name"><div class="field"><label for="person">Your name</label><small class="hint" id="person-hint">Type your name once so the person who sent this link knows who you are.</small><input id="person" name="person" maxlength="200" autocomplete="name" aria-describedby="person-hint" required></div><button>Continue</button></form>`, { assignee: true });
     const showTask = (t: TaskDoc & { _id: ObjectId }) => taskDisclosure(t, `/l/${code}/tasks/${t._id}/status`, ctx.now(), list, false, `/l/${code}/tasks/${t._id}/note`);
     const done = tasks.filter(t => t.status === "done"), pending = tasks.filter(t => t.status !== "done");
     const todo = pending.length ? pending.map(showTask).join("") : `<p class="empty">${tasks.length ? "Everything here is done. Nice work!" : "There are no Tasks in this List yet."}</p>`;
@@ -307,17 +326,30 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   });
   for (const action of ["status", "note"] as const) app.post(`/l/:code/tasks/:id/${action}`, async (request, reply) => {
     const { code, id } = request.params as Params; const assignment = await activeAssignment(ctx, code); if (!assignment) return inactiveLink(ctx, code, reply);
+    if (!assignment.personId) return fail(reply, 403, "Enter your name first.");
     const taskId = parseId(id); if (!taskId) return fail(reply, 404, "Task not found.");
     const task = await ctx.store.tasks.findOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId, ...live }); if (!task) return fail(reply, 404, "Task not found.");
     const form = parseForm(request.body);
     if (action === "status") {
       const status = field(form, "status"), note = field(form, "note"); if (!["open", "blocked", "done"].includes(status)) return fail(reply, 400, "Invalid status.");
-      const person = await ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId });
+      const person = await ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live });
       const error = await statusChange(ctx, task, status as TaskStatus, note, person ? { name: person.name, personId: person._id } : undefined); if (error) return fail(reply, 400, error);
     } else {
       const note = field(form, "note"); if (!textLimit(note, 2000)) return fail(reply, 400, "Note is too long.");
       await ctx.store.tasks.updateOne({ _id: taskId, ownerId: assignment.ownerId, listId: assignment.listId }, { $set: { note, updatedAt: ctx.now() } });
       await recordEvent(ctx, assignment.ownerId, "task.note", { listId: assignment.listId, taskId, personId: assignment.personId, fromValue: task.note, toValue: note });
+    }
+    return redirect(reply, `/l/${code}`);
+  });
+  app.post("/l/:code/name", async (request, reply) => {
+    const code = (request.params as Params).code; const assignment = await activeAssignment(ctx, code); if (!assignment) return inactiveLink(ctx, code, reply);
+    if (!assignment.personId) {
+      const name = field(parseForm(request.body), "person"); if (!name || !textLimit(name, 200)) return fail(reply, 400, "Enter your name.");
+      const nameLower = name.toLowerCase(); let person = await ctx.store.people.findOne({ ownerId: assignment.ownerId, nameLower, ...live }), created = false;
+      if (!person) { try { const result = await ctx.store.people.insertOne({ ownerId: assignment.ownerId, name, nameLower }); created = true; person = await ctx.store.people.findOne({ _id: result.insertedId }); } catch { person = await ctx.store.people.findOne({ ownerId: assignment.ownerId, nameLower, ...live }); } }
+      if (!person) return fail(reply, 500, "Could not save name.");
+      const bound = await ctx.store.assignments.updateOne({ _id: assignment._id, active: true, personId: { $exists: false } }, { $set: { personId: person._id } });
+      if (!bound.modifiedCount && created) await ctx.store.people.deleteOne({ _id: person._id, ownerId: assignment.ownerId });
     }
     return redirect(reply, `/l/${code}`);
   });
@@ -333,7 +365,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     if (counted) {
       const first = await ctx.store.assignments.findOneAndUpdate({ _id: assignment._id, active: true, firstViewedAt: { $exists: false } }, { $set: { firstViewedAt: ctx.now(), lastViewedAt: ctx.now() }, $inc: { viewCount: 1 } });
       if (first) {
-        const [person, list] = await Promise.all([ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId }), ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId })]);
+        const [person, list] = await Promise.all([ctx.store.people.findOne({ _id: assignment.personId, ownerId: assignment.ownerId, ...live }), ctx.store.lists.findOne({ _id: assignment.listId, ownerId: assignment.ownerId, ...live })]);
         await recordEvent(ctx, assignment.ownerId, "assignment.opened", { listId: assignment.listId, personId: assignment.personId, summary: `${person?.name || "Someone"} opened ${list?.name || "a List"}` });
       }
       else await ctx.store.assignments.updateOne({ _id: assignment._id, active: true }, { $set: { lastViewedAt: ctx.now() }, $inc: { viewCount: 1 } });
@@ -347,16 +379,17 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
     const shown = (t: TaskDoc) => (!query.tag || t.tags.includes(query.tag)) && (!query.status || t.status === query.status);
     const filtered = Boolean(query.person || query.tag || query.status);
     const sections = people.filter(p => !query.person || p._id.toHexString() === query.person).map(p => {
-      const mine = assignments.filter(a => a.personId.equals(p._id) && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(a.listId) && shown(t))));
+      const mine = assignments.filter(a => a.personId?.equals(p._id) && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(a.listId) && shown(t))));
       const cards = mine.map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); const visible = all.filter(shown); return `<article><a href="/assign/lists/${a.listId}">${esc(list?.name)}</a> · ${all.filter(t => t.status === "done").length} of ${all.length} done · ${a.lastViewedAt ? `Viewed ${timeTag(a.lastViewedAt)}` : "Not opened yet"}${visible.length ? `<ul class="task-lines">${visible.map(t => `<li><span class="${t.status}">${esc(t.title)}</span> ${badge(t.status)}${t.note ? ` ${esc(t.note)}` : ""}</li>`).join("")}</ul>` : ""}</article>`; }).join("");
       return `<section><h2>${esc(p.name)}</h2>${cards || `<p class="empty">${filtered ? "Nothing matches these filters." : "No active Lists."}</p>`}</section>`;
     }).join("");
+    const awaiting = query.person || filtered ? "" : assignments.filter(a => !a.personId).map(a => { const list = lists.find(l => l._id.equals(a.listId)); const all = tasks.filter(t => t.listId?.equals(a.listId)); return `<article><a href="/assign/lists/${a.listId}">${esc(list?.name)}</a> · <span class="badge">Awaiting name</span> · ${all.length} Tasks</article>`; }).join("");
     const unassigned = query.person ? [] : tasks.filter(t => !t.listId && shown(t));
     const drafts = query.person ? [] : lists.filter(l => l.status === "draft" && ((!query.tag && !query.status) || tasks.some(t => t.listId?.equals(l._id) && shown(t))));
     const option = (value: string, label: string, current?: string) => `<option value="${esc(value)}"${value === (current || "") ? " selected" : ""}>${esc(label)}</option>`;
     const filters = `<form class="filters" role="search" aria-label="Filter the Board"><div class="field"><label for="filter-person">Person</label><select id="filter-person" name="person">${option("", "All people", query.person)}${people.map(p => option(p._id.toHexString(), p.name, query.person)).join("")}</select></div><div class="field"><label for="filter-tag">Tag</label><input id="filter-tag" name="tag" value="${esc(query.tag || "")}"></div><div class="field"><label for="filter-status">Status</label><select id="filter-status" name="status">${option("", "All statuses", query.status)}${STATUSES.map(s => option(s, statusLabel[s], query.status)).join("")}</select></div><div class="actions"><button>Filter</button>${filtered ? '<a href="/assign">Clear filters</a>' : ""}</div></form>`;
     const welcome = !tasks.length && !lists.length ? '<section><h2>Get started</h2><ol><li><a href="/assign/tasks">Add Tasks</a> you want done.</li><li><a href="/assign/lists">Group them into a List</a>.</li><li>Assign the List to someone and send them its link. Their progress shows up here.</li></ol></section>' : "";
-    const body = `${welcome}${filters}<p><a href="/assign/feed">Activity (${unread} unread)</a></p>${sections}${query.person ? "" : `<section><h2>Draft Lists</h2>${drafts.map(l => `<p><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="muted">· not assigned yet</span></p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : "No draft Lists."}</p>`}</section><section><h2>Unassigned Tasks</h2>${unassigned.map(t => `<p>${taskLink(t)}</p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : tasks.length ? "Every Task is in a List." : "No Tasks yet."}</p>`}</section>`}`;
+    const body = `${welcome}${filters}<p><a href="/assign/feed">Activity (${unread} unread)</a></p>${sections}${awaiting ? `<section><h2>Awaiting name</h2>${awaiting}</section>` : ""}${query.person ? "" : `<section><h2>Draft Lists</h2>${drafts.map(l => `<p><a href="/assign/lists/${l._id}">${esc(l.name)}</a> <span class="muted">· not assigned yet</span></p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : "No draft Lists."}</p>`}</section><section><h2>Unassigned Tasks</h2>${unassigned.map(t => `<p>${taskLink(t)}</p>`).join("") || `<p class="empty">${filtered ? "Nothing matches these filters." : tasks.length ? "Every Task is in a List." : "No Tasks yet."}</p>`}</section>`}`;
     return send(reply, "Board", body, { live: "/assign/events", current: "/assign" });
   });
   app.get("/assign/feed", async (request, reply) => {
@@ -387,7 +420,7 @@ export function registerWorkflow(app: FastifyInstance, ctx: AssignContext) {
   app.get("/assign/tasks/:id/delete", async (request, reply) => {
     const owner = await ownerOf(ctx, request, reply); if (!owner) return; const task = await ownTask(ctx, owner, request); if (!task) return fail(reply, 404, "Task not found.");
     const assignment = task.listId ? await ctx.store.assignments.findOne({ ownerId: owner._id, listId: task.listId, active: true }) : null;
-    const person = assignment ? await ctx.store.people.findOne({ _id: assignment.personId, ownerId: owner._id }) : null;
+    const person = assignment ? await ctx.store.people.findOne({ _id: assignment.personId, ownerId: owner._id, ...live }) : null;
     return send(reply, `Delete ${task.title}?`, confirmDelete(`This can't be undone.${person ? ` It also removes the Task from ${esc(person.name)}'s link.` : ""}`, "Delete Task", `/assign/tasks/${task._id}`), { current: "/assign/tasks" });
   });
   app.post("/assign/tasks/:id/delete", async (request, reply) => {
