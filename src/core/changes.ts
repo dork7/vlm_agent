@@ -1,6 +1,6 @@
 import type { ObjectId } from "mongodb";
 import type { ChangeAction, ChangeDoc, Database, NoteDoc, ShownItem, TaskDoc, TaskDue } from "../db.ts";
-import type { ChatMessage, Llm, LlmAnswer, MadeToolCall, Tool } from "../llm/openrouter.ts";
+import type { ChatMessage, LlmAnswer, MadeToolCall, Tool, ToolCalling } from "../llm/openrouter.ts";
 import { wallClockToInstant } from "../time.ts";
 import { due as readDue, type Due } from "./classify.ts";
 import { changeTaskDue, sameDue, setTaskStatus, shownDue } from "./tasks.ts";
@@ -67,7 +67,7 @@ const ITEM_NOT_FOUND: Tool = {
  * matches. Throws AllModelsFailedError when no model gives a usable answer.
  */
 export async function resolveChange(
-  llm: Llm,
+  llm: ToolCalling,
   transcript: string,
   items: { notes: NoteDoc[]; tasks: TaskDoc[] },
   context: { today: { date: string; weekday: string }; timezone: string },
