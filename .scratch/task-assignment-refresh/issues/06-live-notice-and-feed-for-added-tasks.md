@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] An open Assignee page gets the banner for an added Task without refreshing.
 - [ ] Board feed has an entry for each add to an assigned List, and none for Draft Lists.

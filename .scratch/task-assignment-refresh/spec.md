@@ -1,6 +1,6 @@
 # Spec: Task assignment refresh
 
-Status: ready-for-agent
+Status: resolved
 
 Builds on [../task-assignment/spec.md](../task-assignment/spec.md) and ADR 0006 (separate module on MongoDB). Vocabulary is from `GLOSSARY.md`: Owner, Assigned Task, Note, Deadline, List, Person, Assignee, Assignment, Additional Task, Removed Task, Board. Implementation tickets: `issues/01` to `08`.
 

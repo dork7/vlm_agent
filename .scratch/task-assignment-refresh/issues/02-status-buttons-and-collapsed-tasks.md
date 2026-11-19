@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Each status shows exactly the buttons above, on both pages.
 - [ ] Done then Reopen restores an open Task in one click, collapsed or expanded.

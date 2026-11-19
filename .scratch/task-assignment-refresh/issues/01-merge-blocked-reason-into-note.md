@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Blocking a Task with an empty Note succeeds, on both pages.
 - [ ] Blocked Tasks show their Note on the Board, the feed and the Task link.

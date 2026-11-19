@@ -4,7 +4,7 @@
 
 **Blocked by:** 05, 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A deleted Task still shows its title as Removed on the Assignee's page.
 - [ ] Done and not-Done removals both show; Draft List removals show nothing.
