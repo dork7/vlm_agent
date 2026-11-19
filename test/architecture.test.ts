@@ -27,3 +27,12 @@ describe("channel-neutral core (ADR 0005)", () => {
     expect(imports.filter((specifier) => /grammy|telegram/i.test(specifier))).toEqual([]);
   });
 });
+
+describe("Task assignment module boundary", () => {
+  it("does not cross into the bot modules", () => {
+    const imports = reachableImports("src/assign/index.ts");
+    expect(imports.filter(x => /(?:core|telegram|dashboard|db\.ts)/.test(x))).toEqual([]);
+    for (const entry of ["src/core/core.ts", "src/telegram/adapter.ts", "src/dashboard/dashboard.ts"])
+      expect(reachableImports(entry).filter(x => x.includes("/assign/"))).toEqual([]);
+  });
+});

@@ -5,6 +5,7 @@ import type { Llm } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { classify, type Classification, type Due } from "../core/classify.ts";
 import { answerQuery } from "../core/query.ts";
+import { research } from "../core/research.ts";
 import { listTasks } from "../core/tasks.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
 import type { Tts } from "./tts.ts";
@@ -193,6 +194,11 @@ async function respondTo(
 
     case "change":
       return { text: "Editing existing items by voice isn't supported yet." };
+
+    case "research": {
+      const { answer } = await research({ llm: deps.llm, database, ownerId, request: classification.request, today: todayIn(now(), timezone) });
+      return { text: answer ?? "I couldn't find anything about that." };
+    }
   }
 }
 

@@ -44,6 +44,10 @@ _Avoid_: Request, question, lookup
 A request to change information held in an Inventory. Not supported yet.
 _Avoid_: Action, update, write
 
+**Research**:
+A request to find something out that isn't in the Inventory, answered from the web and the person's own Notes and Tasks, with the sources it drew on.
+_Avoid_: Search, lookup, web query
+
 **Heading**:
 A short AI-written line naming the most important point of a Note or Task.
 _Avoid_: Title, subject, summary
@@ -60,6 +64,10 @@ _Avoid_: Notification, alert, ping
 The bot asking the person whether an unclear Voice Message is a Note, Task or Query.
 _Avoid_: Disambiguation, prompt, follow-up
 
+**Voice Assistant**:
+The AI a User talks with out loud on the dashboard's Voice page. A conversation, not a Channel: nothing said to it becomes a Note, Task or Query.
+_Avoid_: Voice agent (except for its worker process), voice bot, call
+
 ## Observability
 
 **Run**:
@@ -71,3 +79,55 @@ _Avoid_: Job, trace, execution, request
 **Inventory**:
 The stock of items, with their quantities, that the bot can look up on the person's behalf.
 _Avoid_: Stock, catalogue, warehouse
+
+## Task assignment (separate module)
+
+These terms belong to the Task assignment module in `src/assign/` only; it shares no data with the bot's Users, Notes or Tasks.
+
+**Owner**:
+A person with a Task assignment account (email login) and a private workspace. Not the same as a bot User.
+_Avoid_: User, admin, manager
+
+**Assigned Task**:
+One thing to do in an Owner's workspace: a title, tags, an optional instruction, an optional Deadline, one Note, and a status of open, blocked or done. Called "Task" inside the module.
+_Avoid_: Job, item, to-do
+
+**Note**:
+The single free-text field on an Assigned Task where the Owner or Assignee says anything about it, including what is blocking it. Replaces the former separate blocked reason. Not the same as a bot Note.
+_Avoid_: Blocked reason, comment, reason
+
+**Deadline**:
+The optional date and time by which an Assigned Task should be done; when only a date is given, the time is the end of that day.
+_Avoid_: Due date, due time, expiry
+
+**List**:
+A named group of an Owner's Assigned Tasks; each Task in a List is a copy that belongs to that List only (see ADR 0007).
+_Avoid_: Checklist, group, project
+
+**Template**:
+A Task in no List, never assigned; putting it in a List makes a copy there, and the Template stays reusable.
+_Avoid_: Master task, prototype task, group
+
+**Additional Task**:
+An Assigned Task added to a List after that List was assigned; Tasks added before assignment are not. Shown with an "Additional task" tag.
+_Avoid_: New task, late task, extra task
+
+**Removed Task**:
+A Task taken out of an assigned List, or deleted, after assignment; the Assignee still sees its title marked "Removed", with nothing to act on.
+_Avoid_: Deleted task, cancelled task
+
+**Person**:
+Someone an Owner gives Lists to, known only by a name; never has an account.
+_Avoid_: Contact, worker, member
+
+**Assignee**:
+A Person while using an Assignment's link page.
+_Avoid_: Guest, viewer
+
+**Assignment**:
+One List given to one Person, with its own unguessable, revocable link.
+_Avoid_: Share, invite, link
+
+**Board**:
+The Owner's overview of who is doing what, with the activity feed.
+_Avoid_: Dashboard, overview

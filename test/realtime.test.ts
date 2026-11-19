@@ -59,7 +59,7 @@ describe("realtime talking agent", () => {
   it("serves the Talk page inside the dashboard, linked from the nav", async () => {
     const page = await server.inject({ method: "GET", url: "/realtime", headers: basicAuth("ana", "secret") });
     expect(page.statusCode).toBe(200);
-    expect(page.body).toContain('<a href="/realtime">Talk</a>');
+    expect(page.body).toContain('<a href="/realtime" aria-current="page">Talk</a>');
     expect(page.body).toContain('"/realtime/ws"');
   });
 

@@ -61,14 +61,42 @@ describe("dashboard Notes page", () => {
     return server.inject({ method: "GET", url, headers: basicAuth(...as) });
   }
 
-  describe("login", () => {
-    it("asks for credentials when none are given", async () => {
+  describe("dashboard User", () => {
+    it("opens without credentials or a browser login prompt", async () => {
       await createUser("alice", "alice-pass");
 
       const response = await server.inject({ method: "GET", url: "/notes" });
 
-      expect(response.statusCode).toBe(401);
-      expect(response.headers["www-authenticate"]).toMatch(/^Basic /);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["www-authenticate"]).toBeUndefined();
+    });
+
+    it("prefers the first admin and allows edits without credentials", async () => {
+      const alice = await createUser("alice", "alice-pass");
+      const admin = await createUser("admin", "admin-pass");
+      await database().users.updateOne({ _id: admin }, { $set: { isAdmin: true } });
+      await createNote(alice, { heading: "Alice only", text: "Alice's note" });
+      const note = await createNote(admin, { heading: "Admin note", text: "Original" });
+
+      const page = await server.inject({ method: "GET", url: "/notes" });
+      expect(page.statusCode).toBe(200);
+      expect(page.body).toContain("Admin note");
+      expect(page.body).not.toContain("Alice only");
+      expect((await server.inject({ method: "GET", url: "/users" })).statusCode).toBe(200);
+
+      const saved = await server.inject({
+        method: "POST", url: `/notes/${note}`,
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ heading: "Updated", text: "Edited without login" }).toString(),
+      });
+      expect(saved.statusCode).toBe(303);
+      expect(await database().notes.findOne({ _id: note })).toMatchObject({ heading: "Updated", text: "Edited without login", ownerId: admin });
+    });
+
+    it("returns a setup error when there are no Users", async () => {
+      const response = await server.inject({ method: "GET", url: "/notes" });
+      expect(response.statusCode).toBe(503);
+      expect(response.headers["www-authenticate"]).toBeUndefined();
     });
 
     it("refuses a wrong password and an unknown username", async () => {
@@ -79,6 +107,8 @@ describe("dashboard Notes page", () => {
 
       expect(wrongPassword.statusCode).toBe(401);
       expect(unknownUser.statusCode).toBe(401);
+      expect(wrongPassword.headers["www-authenticate"]).toBeUndefined();
+      expect(unknownUser.headers["www-authenticate"]).toBeUndefined();
     });
 
     it("shows the Notes page to a User with the right password", async () => {

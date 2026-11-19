@@ -150,7 +150,7 @@ describe("Telegram adapter: listing Notes", () => {
     const core: Core = {
       async handleMessage(_message, emit) {
         await emit({ type: "processing-started" });
-        await emit({ type: "result", result: { kind: "notes-listed", notes } }, { processedBy: "openrouter" });
+        await emit({ type: "result", result: { kind: "notes-listed", notes } }, { processedBy: "openrouter", model: "test/model-a" });
         finishHandling();
         return { duplicate: false, transcription: null, modelAttempts: [], inventoryRequests: [], clarification: null, runId: null } satisfies HandledMessage;
       },
@@ -228,7 +228,7 @@ describe("Telegram adapter: listing Notes", () => {
       "Your Notes:\n\n" +
         "1. Forklift key\nThe forklift key is in the top drawer.\n\n" +
         "2. Blue mugs\nThe blue mugs are on shelf 3." +
-        "\n\nProcessed by OpenRouter",
+        "\n\nProcessed by OpenRouter (test/model-a)",
     );
   });
 
@@ -237,7 +237,7 @@ describe("Telegram adapter: listing Notes", () => {
 
     await showNotes();
 
-    expect(apiCalls[1]!.payload.text).toBe("You have no Notes yet.\n\nProcessed by OpenRouter");
+    expect(apiCalls[1]!.payload.text).toBe("You have no Notes yet.\n\nProcessed by OpenRouter (test/model-a)");
   });
 
   it("splits a list too long for one Telegram message across several, without losing any Note", async () => {
@@ -251,7 +251,7 @@ describe("Telegram adapter: listing Notes", () => {
     expect(texts.length).toBeGreaterThan(1);
     expect(texts.every((text) => text.length <= 4096)).toBe(true);
     for (let i = 1; i <= 40; i++) expect(texts.join("\n")).toContain(`${i}. Note ${i}\n`);
-    expect(texts.at(-1)).toMatch(/\n\nProcessed by OpenRouter$/);
+    expect(texts.at(-1)).toMatch(/\n\nProcessed by OpenRouter \(test\/model-a\)$/);
     expect(texts.slice(0, -1).some((text) => text.includes("Processed by"))).toBe(false);
   });
 });

@@ -31,13 +31,14 @@ const REQUIRED = [
   "MONGODB_URI",
   "OPENROUTER_API_KEY",
   "OPENROUTER_MODELS",
-  "ADMIN_USERNAME",
-  "ADMIN_PASSWORD",
   "ADMIN_TELEGRAM_ID",
   "INVENTORY_API_KEY",
 ] as const;
 
 export class ConfigError extends Error {}
+
+/** Used for the first admin when ADMIN_USERNAME or ADMIN_PASSWORD is unset. Startup warns while the password is in use. */
+export const DEFAULT_ADMIN = { username: "admin", password: "changeme" } as const;
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const value = (name: string) => env[name]?.trim() || undefined;
@@ -99,8 +100,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
         .filter(Boolean),
     },
     firstAdmin: {
-      username: required("ADMIN_USERNAME"),
-      password: required("ADMIN_PASSWORD"),
+      username: value("ADMIN_USERNAME") ?? DEFAULT_ADMIN.username,
+      password: value("ADMIN_PASSWORD") ?? DEFAULT_ADMIN.password,
       telegramId: required("ADMIN_TELEGRAM_ID"),
     },
   };

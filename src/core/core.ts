@@ -14,7 +14,7 @@ import {
   type UserDoc,
 } from "../db.ts";
 import type { InventoryClient, InventoryRequest } from "../inventory/client.ts";
-import { isLocalModel, type Llm, type ModelAttempt } from "../llm/openrouter.ts";
+import { isLocalModel, type Llm, type ModelAttempt, type ToolCalling } from "../llm/openrouter.ts";
 import type { AudioSource, Transcriber } from "../transcriber/transcriber.ts";
 import { findUserByChannelIdentity } from "../users.ts";
 import { todayIn, wallClockToInstant } from "../time.ts";
@@ -22,8 +22,11 @@ import { applyChange, choosableItems, planChange, resolveChange } from "./change
 import { classify, type Due } from "./classify.ts";
 import { writeMarkdownCopies } from "./markdown.ts";
 import { answerQuery } from "./query.ts";
+import { research, type ResearchSources } from "./research.ts";
 import { sendDueReminders, type DeliverReminder, type ReminderEvent } from "./reminders.ts";
 import {
+  attemptsOnError,
+  collectingAttempts,
   errorMessage,
   recordingEmit,
   recordingInventory,
@@ -34,7 +37,7 @@ import {
 } from "./runs.ts";
 import { listTasks, setTaskStatus } from "./tasks.ts";
 
-export type { ChangeAction, ClarificationOption, DeliverReminder, Due, ReminderEvent, ShownItem };
+export type { ChangeAction, ClarificationOption, DeliverReminder, Due, ReminderEvent, ResearchSources, ShownItem };
 
 /** A message from any Channel, in a channel-neutral shape (ADR 0005). */
 export type InboundMessage = {
@@ -47,7 +50,9 @@ export type InboundMessage = {
     /** The User's choice in an earlier Clarification, e.g. a tapped button. */
     | { kind: "clarification-answer"; clarificationId: string; answer: ClarificationOption }
     /** The User's answer to a proposed change, e.g. a tapped Confirm or Cancel button. */
-    | { kind: "change-answer"; changeId: string; confirm: boolean };
+    | { kind: "change-answer"; changeId: string; confirm: boolean }
+    /** A request to see the User's open Tasks or their Notes, e.g. a tapped button; no model is asked. */
+    | { kind: "list"; what: "tasks" | "notes" };
   clarifyWith: ClarifyWith;
 };
 
@@ -75,6 +80,10 @@ export type Result =
   | { kind: "notes-listed"; notes: ListedNote[] }
   /** A plain-language answer to a Query about the Inventory. */
   | { kind: "query-answered"; answer: string }
+  /** A Research answer, and the web pages and the User's own Notes and Tasks it drew on. */
+  | { kind: "researched"; answer: string; sources: ResearchSources }
+  /** Research about only the User's own Notes and Tasks, when none of them matched. */
+  | { kind: "nothing-found" }
   /** A Command: changing Inventory data is not supported yet. */
   | { kind: "command-declined" }
   /** A greeting; the Channel says hi and what the bot can do. */
@@ -104,7 +113,8 @@ export type CoreEvent =
   | { type: "change-proposed"; changeId: string; action: ChangeAction; before: ShownItem; after: ShownItem | null };
 
 /** Which model answered for a result or Clarification: one on OpenRouter, or one on the local model server. */
-export type EventSource = { processedBy: "openrouter" | "local" };
+/** Which side's model answered, and its name (a local model's without the "local/" prefix). */
+export type EventSource = { processedBy: "openrouter" | "local"; model: string };
 
 /** `source` is absent when no model answered, e.g. for a refusal or when every model failed. */
 export type EmitEvent = (event: CoreEvent, source?: EventSource) => Promise<void>;
@@ -131,7 +141,7 @@ type Handling = {
   emit: EmitEvent;
   handled: HandledMessage;
   /** The model, its calls recorded as the given stage of the Run. */
-  llm: (stage: RunStageName) => Llm;
+  llm: (stage: RunStageName) => ToolCalling;
   inventory: InventoryClient;
   recorder: RunRecorder;
 };
@@ -165,6 +175,21 @@ export function createCore(deps: {
     } catch (error) {
       console.error(`Failed to write Markdown copies for ${user.username}`, error);
     }
+  };
+
+  /** Shows the User their open Tasks (due on `date`, when given) or their Notes, newest first. */
+  const listItems = async (user: UserDoc, request: { what: "tasks" | "notes"; date: string | null }, emit: EmitEvent) => {
+    if (request.what === "tasks") {
+      const { date } = request;
+      const { tasks, more } = await listTasks(database, user._id!, user.timezone ?? defaultTimezone, date);
+      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
+      return;
+    }
+    const notes = await database.notes.find({ ownerId: user._id! }).sort({ createdAt: -1, _id: -1 }).toArray();
+    await emit({
+      type: "result",
+      result: { kind: "notes-listed", notes: notes.map((note) => ({ heading: note.heading, text: note.text })) },
+    });
   };
 
   /** Records the message as being handled; false when the Channel already delivered it, even if that was before a restart. */
@@ -201,6 +226,10 @@ export function createCore(deps: {
     }
     if (content.kind === "change-answer") {
       await answerChange(user, content.changeId, content.confirm, handling);
+      return;
+    }
+    if (content.kind === "list") {
+      await listItems(user, { what: content.what, date: null }, emit);
       return;
     }
     if (message.clarifyWith === "text") {
@@ -403,6 +432,32 @@ export function createCore(deps: {
       return true;
     }
 
+    if (classification.kind === "research") {
+      const { request } = classification;
+      let outcome;
+      try {
+        // Its own stage, so the Run shows what was searched and found as well as the model attempts.
+        outcome = await handling.recorder.stage(
+          "research",
+          () =>
+            collectingAttempts(handling.handled, () =>
+              research({ llm: deps.llm, database, ownerId: user._id!, request, today: todayIn(now(), timezone) }),
+            ),
+          {
+            details: ({ matches, sources, attempts }) => ({ web: request.web, matches, sources, attempts }),
+            detailsOnError: (error) => ({ web: request.web, ...attemptsOnError(error) }),
+          },
+        );
+      } catch (error) {
+        console.error("Research failed", error);
+        await emit({ type: "result", result: { kind: "error" } });
+        return false;
+      }
+      const { answer, sources } = outcome;
+      await emit({ type: "result", result: answer === null ? { kind: "nothing-found" } : { kind: "researched", answer, sources } });
+      return true;
+    }
+
     if (classification.kind === "command") {
       await emit({ type: "result", result: { kind: "command-declined" } });
       return true;
@@ -429,10 +484,9 @@ export function createCore(deps: {
       return true;
     }
 
-    if (classification.kind === "list-tasks") {
-      const { date } = classification;
-      const { tasks, more } = await listTasks(database, user._id!, timezone, date);
-      await emit({ type: "result", result: { kind: "tasks-listed", tasks, more, date } });
+    if (classification.kind === "list-tasks" || classification.kind === "list-notes") {
+      const { date } = classification.kind === "list-tasks" ? classification : { date: null };
+      await listItems(user, { what: classification.kind === "list-tasks" ? "tasks" : "notes", date }, emit);
       return true;
     }
 
@@ -471,15 +525,6 @@ export function createCore(deps: {
       };
       const { insertedId } = await database.changes.insertOne(change);
       await showChange(insertedId, change, handling);
-      return true;
-    }
-
-    if (classification.kind === "list-notes") {
-      const notes = await database.notes.find({ ownerId: user._id! }).sort({ createdAt: -1, _id: -1 }).toArray();
-      await emit({
-        type: "result",
-        result: { kind: "notes-listed", notes: notes.map((note) => ({ heading: note.heading, text: note.text })) },
-      });
       return true;
     }
 
@@ -571,7 +616,10 @@ export function createCore(deps: {
 function sourceOf(attempts: ModelAttempt[]): EventSource | undefined {
   const answered = attempts.findLast((attempt) => attempt.outcome === "succeeded");
   if (!answered) return undefined;
-  return { processedBy: isLocalModel(answered.model) ? "local" : "openrouter" };
+  const { model } = answered;
+  return isLocalModel(model)
+    ? { processedBy: "local", model: model.replace(/^local\/?/, "") }
+    : { processedBy: "openrouter", model };
 }
 
 function storedDue(due: Due, timezone: string): TaskDue {

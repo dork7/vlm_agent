@@ -1,5 +1,5 @@
 import type { InventoryClient, InventoryLookup, ItemFilters } from "../inventory/client.ts";
-import type { ChatMessage, Llm, MadeToolCall, Tool } from "../llm/openrouter.ts";
+import type { ChatMessage, MadeToolCall, Tool, ToolCalling } from "../llm/openrouter.ts";
 import { optionalString, requiredString, toolArguments } from "./tool-arguments.ts";
 
 export const SEARCH_ITEMS: Tool = {
@@ -93,7 +93,7 @@ function readLookup(call: MadeToolCall): InventoryLookup {
  * `conversation` ends with the message the first lookup came from.
  */
 export async function answerQuery(deps: {
-  llm: Llm;
+  llm: ToolCalling;
   inventory: InventoryClient;
   conversation: ChatMessage[];
   first: InventoryToolCall;
