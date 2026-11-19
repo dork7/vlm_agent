@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Adding a Template to two Lists gives two independent copies; changing status or Note on one touches neither the other nor the Template.
 - [ ] The Template stays in the main list after being added; removing a copy leaves it in place.

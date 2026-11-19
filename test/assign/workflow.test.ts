@@ -42,6 +42,8 @@ describe("Task assignment workflow", () => {
   // Assignee-style form POST (no Owner session or CSRF), by payload object or raw string.
   const postForm = (url: string, payload: Record<string, string> | string = {}) => app.inject({ method: "POST", url, headers: FORM_HEADERS, payload: typeof payload === "string" ? payload : new URLSearchParams(payload).toString() });
   type Store = Awaited<ReturnType<typeof openAssignStore>>;
+  // The live copy a Template produced (copies are what Assignees and Owners change status on).
+  const copyFor = async (store: Store, template: { _id: ObjectId }) => (await store.tasks.findOne({ templateId: template._id, kind: "copy", deletedAt: { $exists: false } }))!;
   // Link code of the List's active Assignment.
   const activeCode = async (store: Store, listId: ObjectId) => (await store.assignments.findOne({ listId, active: true }))!.code;
   // Logs in a fresh Owner and creates one Task per title.
@@ -49,9 +51,11 @@ describe("Task assignment workflow", () => {
     const owner = browser(); await owner.login(email);
     for (const title of titles) await owner.post("/assign/tasks", { title });
     const store = await openAssignStore(db);
-    const task = async (title: string) => (await store.tasks.findOne({ title }))!;
+    // task/id resolve to the live copy once the Template has been added to a List (copies sort before "template"); tid is always the Template.
+    const task = async (title: string) => (await store.tasks.findOne({ title, deletedAt: { $exists: false } }, { sort: { kind: 1 } }))!;
     const id = async (title: string) => (await task(title))._id.toHexString();
-    return { owner, store, task, id };
+    const tid = async (title: string) => (await store.tasks.findOne({ title, kind: "template" }))!._id.toHexString();
+    return { owner, store, task, id, tid };
   }
   // Opens an SSE stream on the test server; readUntil collects text until the needle shows up.
   async function openStream(path: string, headers: Record<string, string> = {}) {
@@ -72,9 +76,10 @@ describe("Task assignment workflow", () => {
   it("builds a List, gives one scoped link, and revokes it", async () => {
     const owner = browser(); await owner.login("owner@example.com");
     expect((await owner.post("/assign/tasks", { title: "Pack books", tags: "move" })).statusCode).toBe(303);
-    const store = await openAssignStore(db); const task = (await store.tasks.findOne({ title: "Pack books" }))!;
-    const listReply = await owner.post("/assign/lists", { name: "Move-out", taskIds: task._id.toHexString() });
+    const store = await openAssignStore(db); const template = (await store.tasks.findOne({ title: "Pack books" }))!;
+    const listReply = await owner.post("/assign/lists", { name: "Move-out", taskIds: template._id.toHexString() });
     expect(listReply.statusCode).toBe(303);
+    const task = await copyFor(store, template);
     const list = (await store.lists.findOne({ name: "Move-out" }))!;
     expect((await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" })).statusCode).toBe(303);
     const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
@@ -231,9 +236,10 @@ describe("Task assignment workflow", () => {
     const owner = browser(); await owner.login("owner@example.com");
     await owner.post("/assign/tasks", { title: "A" });
     await owner.post("/assign/tasks", { title: "B" });
-    const store = await openAssignStore(db), tasks = await store.tasks.find({}).toArray();
-    await owner.post("/assign/lists", { name: "Checklist", taskIds: tasks.map(task => task._id.toHexString()) });
+    const store = await openAssignStore(db), templates = await store.tasks.find({}).toArray();
+    await owner.post("/assign/lists", { name: "Checklist", taskIds: templates.map(task => task._id.toHexString()) });
     const list = (await store.lists.findOne({ name: "Checklist" }))!;
+    const tasks = await store.tasks.find({ listId: list._id }).toArray();
     for (const task of tasks) await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
     expect(await store.events.countDocuments({ listId: list._id, kind: "list.complete" })).toBe(1);
     await owner.post(`/assign/tasks/${tasks[0]!._id}/status`, { status: "open" });
@@ -281,9 +287,9 @@ describe("Task assignment workflow", () => {
   it("explains deletions and removes Tasks and Lists from active links", async () => {
     const owner = browser(); await owner.login("owner@example.com");
     await owner.post("/assign/tasks", { title: "Carry" });
-    const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Carry" }))!;
-    await owner.post("/assign/lists", { name: "Moving", taskIds: task._id.toHexString() });
-    const list = (await store.lists.findOne({ name: "Moving" }))!;
+    const store = await openAssignStore(db), template = (await store.tasks.findOne({ title: "Carry" }))!;
+    await owner.post("/assign/lists", { name: "Moving", taskIds: template._id.toHexString() });
+    const list = (await store.lists.findOne({ name: "Moving" }))!, task = await copyFor(store, template);
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
     const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
     expect((await owner.get(`/assign/tasks/${task._id}/delete`)).body).toContain("Omar's link");
@@ -294,6 +300,16 @@ describe("Task assignment workflow", () => {
     expect((await owner.get(`/assign/lists/${list._id}/delete`)).body).toContain("Revokes 1 active link and");
     await owner.post(`/assign/lists/${list._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("no longer available");
+    expect((await store.tasks.findOne({ _id: template._id }))!.deletedAt).toBeUndefined();
+  });
+  it("retains a deleted List's copies with reason list-deleted and keeps the Template", async () => {
+    const { owner, store, id, tid } = await seedTasks("copy-listdel@example.com", ["Keep me"]);
+    await owner.post("/assign/lists", { name: "Doomed", taskIds: await tid("Keep me") });
+    const list = (await store.lists.findOne({ name: "Doomed" }))!, copy = (await store.tasks.findOne({ listId: list._id }))!;
+    await owner.post(`/assign/lists/${list._id}/delete`);
+    expect((await store.tasks.findOne({ _id: copy._id }))!.deleteReason).toBe("list-deleted");
+    expect((await store.tasks.findOne({ _id: await tid("Keep me").then(x => new ObjectId(x)) }))!.deletedAt).toBeUndefined();
+    expect(await id("Keep me")).toBe(await tid("Keep me"));
   });
   it("migrates old blocked reasons once and permits an empty Note", async () => {
     const owner = browser(); await owner.login("migration@example.com");
@@ -323,19 +339,21 @@ describe("Task assignment workflow", () => {
   it("keeps Task kind in step with List membership in the existing flows", async () => {
     const owner = browser(); await owner.login("kind2@example.com");
     await owner.post("/assign/tasks", { title: "Solo" });
-    const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Solo" }))!;
-    expect(task.kind).toBe("template");
-    await owner.post("/assign/lists", { name: "L", taskIds: task._id.toHexString() });
-    const list = (await store.lists.findOne({ name: "L" }))!;
-    expect((await store.tasks.findOne({ _id: task._id }))!.kind).toBe("copy");
-    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: task._id.toHexString() });
-    expect((await store.tasks.findOne({ _id: task._id }))!.kind).toBe("template");
+    const store = await openAssignStore(db), template = (await store.tasks.findOne({ title: "Solo" }))!;
+    expect(template.kind).toBe("template");
+    await owner.post("/assign/lists", { name: "L", taskIds: template._id.toHexString() });
+    const list = (await store.lists.findOne({ name: "L" }))!, copy = await copyFor(store, template);
+    expect(copy.kind).toBe("copy"); expect((await store.tasks.findOne({ _id: template._id }))!.kind).toBe("template");
+    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: copy._id.toHexString() });
+    expect((await store.tasks.findOne({ _id: copy._id }))!.deleteReason).toBe("removed");
+    expect((await store.tasks.findOne({ _id: template._id }))!.deletedAt).toBeUndefined();
   });
   it("lets an Assignee block without a Note and shows the Note wherever the reason appeared", async () => {
     const owner = browser(); await owner.login("blocknote@example.com");
     await owner.post("/assign/tasks", { title: "Stuck" }); await owner.post("/assign/tasks", { title: "Jammed" });
-    const store = await openAssignStore(db), stuck = (await store.tasks.findOne({ title: "Stuck" }))!, jammed = (await store.tasks.findOne({ title: "Jammed" }))!;
-    await owner.post("/assign/lists", { name: "Jobs", taskIds: [stuck._id.toHexString(), jammed._id.toHexString()], person: "Lena" });
+    const store = await openAssignStore(db), stuckT = (await store.tasks.findOne({ title: "Stuck" }))!, jammedT = (await store.tasks.findOne({ title: "Jammed" }))!;
+    await owner.post("/assign/lists", { name: "Jobs", taskIds: [stuckT._id.toHexString(), jammedT._id.toHexString()], person: "Lena" });
+    const stuck = await copyFor(store, stuckT), jammed = await copyFor(store, jammedT);
     const assignment = (await store.assignments.findOne({ active: true }))!;
     const link = `/l/${assignment.code}`;
     expect((await postForm(`${link}/tasks/${stuck._id}/status`, "status=blocked")).statusCode).toBe(303);
@@ -348,8 +366,8 @@ describe("Task assignment workflow", () => {
   });
   describe("Create List from selection and the Lists sidebar", () => {
     it("creates a Draft List without a Person and records no first assignment", async () => {
-      const { owner, store, id } = await seedTasks("draft@example.com", ["A", "B"]);
-      const reply = await owner.post("/assign/lists", { name: "Prep", taskIds: [await id("A"), await id("B")] });
+      const { owner, store, id, tid } = await seedTasks("draft@example.com", ["A", "B"]);
+      const reply = await owner.post("/assign/lists", { name: "Prep", taskIds: [await tid("A"), await tid("B")] });
       const list = (await store.lists.findOne({ name: "Prep" }))!;
       expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
       expect(list.status).toBe("draft"); expect(list.firstAssignedAt).toBeUndefined();
@@ -357,8 +375,8 @@ describe("Task assignment workflow", () => {
       expect(await store.tasks.countDocuments({ listId: list._id })).toBe(2);
     });
     it("creates List and Assignment together, records first assignment once, and tags nothing as Additional", async () => {
-      const { owner, store, id } = await seedTasks("assign@example.com", ["A"]);
-      const reply = await owner.post("/assign/lists", { name: "Go", taskIds: await id("A"), person: "Nadia" });
+      const { owner, store, id, tid } = await seedTasks("assign@example.com", ["A"]);
+      const reply = await owner.post("/assign/lists", { name: "Go", taskIds: await tid("A"), person: "Nadia" });
       const list = (await store.lists.findOne({ name: "Go" }))!;
       expect(reply.headers.location).toBe(`/assign/lists/${list._id}`);
       const first = list.firstAssignedAt; expect(first).toBeInstanceOf(Date); expect(list.status).toBe("active");
@@ -368,31 +386,34 @@ describe("Task assignment workflow", () => {
       expect((await store.lists.findOne({ _id: list._id }))!.firstAssignedAt).toEqual(first);
     });
     it("leaves no List, Assignment or attached Task when creation is rejected", async () => {
-      const { owner, store, id } = await seedTasks("atomic@example.com", ["A", "B"]);
-      const idA = await id("A"), idB = await id("B");
+      const { owner, store, id: idOf } = await seedTasks("atomic@example.com", ["A", "B"]);
+      const idA = await idOf("A"), idB = await idOf("B");
       expect((await owner.post("/assign/lists", { name: "Bad", taskIds: idA, person: "x".repeat(201) })).statusCode).toBe(400);
       expect(await store.lists.countDocuments({})).toBe(0); expect(await store.assignments.countDocuments({})).toBe(0); expect(await store.people.countDocuments({})).toBe(0);
-      expect((await store.tasks.findOne({ title: "A" }))!.listId).toBeUndefined();
+      expect(await store.tasks.countDocuments({ kind: "copy" })).toBe(0);
       await owner.post("/assign/lists", { name: "First", taskIds: idA });
-      const again = await owner.post("/assign/lists", { name: "Second", taskIds: [idB, idA], person: "Sam" });
-      expect(again.statusCode).toBe(400); expect(again.body).toContain("First");
+      const again = await owner.post("/assign/lists", { name: "Second", taskIds: [idB, "0".repeat(24)], person: "Sam" });
+      expect(again.statusCode).toBe(404);
       expect(await store.lists.countDocuments({})).toBe(1); expect(await store.assignments.countDocuments({})).toBe(0); expect(await store.people.countDocuments({})).toBe(0);
-      expect((await store.tasks.findOne({ title: "B" }))!.listId).toBeUndefined();
+      expect(await store.tasks.countDocuments({ kind: "copy" })).toBe(1);
+      const copy = (await store.tasks.findOne({ kind: "copy" }))!;
+      expect((await owner.post("/assign/lists", { name: "Third", taskIds: copy._id.toHexString() })).statusCode).toBe(400);
+      expect(await store.lists.countDocuments({})).toBe(1);
     });
-    it("shows a disabled checkbox labelled with the List for Tasks already in one", async () => {
-      const { owner, id } = await seedTasks("disabled@example.com", ["Taken", "Free"]);
-      await owner.post("/assign/lists", { name: "Mine", taskIds: await id("Taken") });
+    it("shows a disabled checkbox labelled with the List for copies and keeps Templates selectable after they were added", async () => {
+      const { owner, tid } = await seedTasks("disabled@example.com", ["Taken", "Free"]);
+      await owner.post("/assign/lists", { name: "Mine", taskIds: await tid("Taken") });
       const html = (await owner.get("/assign/tasks")).body;
       const taken = html.match(/<input type="checkbox"[^>]*disabled[^>]*>[^<]*Taken[\s\S]{0,200}/)?.[0] || "";
       expect(taken).toContain("Mine");
       expect(html).toMatch(/<input type="checkbox" name="taskIds" value="[0-9a-f]{24}" form="select-tasks">/);
-      expect(html.match(/name="taskIds"[^>]*form="select-tasks"/g)).toHaveLength(1);
+      expect(html.match(/name="taskIds"[^>]*form="select-tasks"/g)).toHaveLength(2);
     });
     it("renders a labelled sidebar of every List with status and done count, kept current", async () => {
-      const { owner, store, id } = await seedTasks("sidebar@example.com", ["A", "B", "C"]);
-      await owner.post("/assign/lists", { name: "Drafty", taskIds: await id("C") });
-      await owner.post("/assign/lists", { name: "Sent", taskIds: [await id("A"), await id("B")], person: "Zed" });
-      const taskA = (await store.tasks.findOne({ title: "A" }))!;
+      const { owner, store, id, tid } = await seedTasks("sidebar@example.com", ["A", "B", "C"]);
+      await owner.post("/assign/lists", { name: "Drafty", taskIds: await tid("C") });
+      await owner.post("/assign/lists", { name: "Sent", taskIds: [await tid("A"), await tid("B")], person: "Zed" });
+      const taskA = (await store.tasks.findOne({ title: "A", kind: "copy" }))!;
       await owner.post(`/assign/tasks/${taskA._id}/status`, { status: "done" });
       const html = (await owner.get("/assign/tasks")).body;
       const sidebar = html.match(/<(?:nav|aside)[^>]*class="list-sidebar"[\s\S]*?<\/(?:nav|aside)>/)![0];
@@ -415,11 +436,11 @@ describe("Task assignment workflow", () => {
     expect((await owner.post(`/assign/lists/${list._id}/add`, { taskId: later._id.toHexString() })).statusCode).toBe(303);
     expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("Additional task");
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("Additional task");
-    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: later._id.toHexString() });
+    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: (await copyFor(store, later))._id.toHexString() });
     const removed = (await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body;
     expect(removed).toContain("Removed"); expect(removed).toContain("Later");
     await owner.post(`/assign/lists/${list._id}/add`, { taskId: later._id.toHexString() });
-    expect((await store.lists.findOne({ _id: list._id }))!.removedTasks || []).toHaveLength(0);
+    expect(await store.tasks.countDocuments({ title: "Later", kind: "copy", listId: list._id, deletedAt: { $exists: false } })).toBe(1);
   });
   it("distinguishes replaced and revoked links, including stale posts", async () => {
     const owner = browser(); await owner.login("links@example.com");
@@ -486,12 +507,14 @@ describe("Task assignment workflow", () => {
     async function dueTask(deadline = { deadlineDate: "2020-01-02", deadlineTime: "09:30", timezoneOffset: "-240" }) {
       const owner = browser(); await owner.login(`due-${crypto.randomUUID()}@example.com`);
       await owner.post("/assign/tasks", { title: "Due", ...deadline });
-      const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Due" }))!;
-      await owner.post("/assign/lists", { name: "L", taskIds: task._id.toHexString() });
-      const list = (await store.lists.findOne({ name: "L" }))!;
+      const store = await openAssignStore(db), template = (await store.tasks.findOne({ title: "Due" }))!;
+      await owner.post("/assign/lists", { name: "L", taskIds: template._id.toHexString() });
+      const list = (await store.lists.findOne({ name: "L" }))!, task = await copyFor(store, template);
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
       const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
-      return { owner, store, task, link: `/l/${assignment.code}` };
+      // The Owner's Tasks page row for the copy (the Template is never done, so it would stay Overdue).
+      const ownerRow = async () => ((await owner.get("/assign/tasks")).body.split('<article class="task-row">').find((part: string) => part.includes(`/assign/tasks/${task._id}`)) || "");
+      return { owner, store, task, ownerRow, link: `/l/${assignment.code}` };
     }
     it("offers Add Task as a button opening a dialog with Title, Tags, Instructions and Deadline", async () => {
       const owner = browser(); await owner.login("dialog@example.com");
@@ -520,20 +543,20 @@ describe("Task assignment workflow", () => {
       for (const kept of ['value="Keep me"', 'value="a, b"', ">Do it</textarea>", 'value="2099-02-30"']) expect(res.body).toContain(kept);
     });
     it("shows the Deadline as one instant to Assignee and Owner, Overdue only while not Done", async () => {
-      const { owner, task, link } = await dueTask();
+      const { owner, task, link, ownerRow } = await dueTask();
       expect((await app.inject({ method: "GET", url: link })).body).toContain('datetime="2020-01-02T05:30:00.000Z"');
-      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(body).toContain("Overdue");
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) expect(body).toContain("Overdue");
       await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
-      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(body).not.toContain("Overdue");
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) expect(body).not.toContain("Overdue");
     });
     it("marks an Overdue Task in the collapsed summary on both pages, never a Done one", async () => {
-      const { owner, task, link } = await dueTask();
+      const { owner, task, link, ownerRow } = await dueTask();
       const summaryOf = (body: string) => body.match(/<summary>[\s\S]*?<\/summary>/)![0];
-      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) {
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) {
         expect(summaryOf(body)).toContain("Overdue"); expect(summaryOf(body)).toMatch(/class="[^"]*overdue/);
       }
       await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
-      for (const body of [(await app.inject({ method: "GET", url: link })).body, (await owner.get("/assign/tasks")).body]) expect(summaryOf(body)).not.toContain("Overdue");
+      for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) expect(summaryOf(body)).not.toContain("Overdue");
     });
     it("reveals the Blocked Note first by cancelling the button's submit, and still posts status=blocked without script", async () => {
       const { link } = await dueTask();
@@ -570,13 +593,13 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/lists/${list._id}/add`, { taskId: extra._id.toHexString() });
     expect(await store.events.countDocuments({ listId: list._id, kind: "list.add" })).toBe(0);
     await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sam" });
-    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: extra._id.toHexString() });
+    await owner.post(`/assign/lists/${list._id}/remove`, { taskId: (await copyFor(store, extra))._id.toHexString() });
     const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
     const stream = await openStream(`/l/${assignment.code}/events`);
     try {
       await owner.post(`/assign/lists/${list._id}/add`, { taskId: extra._id.toHexString() });
       expect(await stream.readUntil("New Task added", 3)).toContain("New Task added: Extra");
-      await owner.post(`/assign/lists/${list._id}/remove`, { taskId: extra._id.toHexString() });
+      await owner.post(`/assign/lists/${list._id}/remove`, { taskId: (await copyFor(store, extra))._id.toHexString() });
       expect(await stream.readUntil("Task removed", 3)).toContain("Task removed: Extra");
       expect((await owner.get("/assign/feed")).body).toContain("Added Extra to Notices");
     } finally { stream.close(); }
@@ -629,20 +652,22 @@ describe("Task assignment workflow", () => {
     async function assigned() {
       const owner = browser(); await owner.login("buttons@example.com");
       await owner.post("/assign/tasks", { title: "Pack books", instruction: "Use small boxes", tags: "move", deadlineDate: "2099-01-02", deadlineTime: "10:00", timezoneOffset: "0" });
-      const store = await openAssignStore(db), task = (await store.tasks.findOne({ title: "Pack books" }))!;
-      await owner.post("/assign/lists", { name: "Move-out", taskIds: task._id.toHexString() });
-      const list = (await store.lists.findOne({ name: "Move-out" }))!;
+      const store = await openAssignStore(db), template = (await store.tasks.findOne({ title: "Pack books" }))!;
+      await owner.post("/assign/lists", { name: "Move-out", taskIds: template._id.toHexString() });
+      const list = (await store.lists.findOne({ name: "Move-out" }))!, task = await copyFor(store, template);
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
       const assignment = (await store.assignments.findOne({ listId: list._id, active: true }))!;
       const link = `/l/${assignment.code}`;
       const assigneePost = (status: string, note = "") => postForm(`${link}/tasks/${task._id}/status`, { status, note });
       const assigneePage = async () => (await app.inject({ method: "GET", url: link })).body;
       const ownerPage = async () => (await owner.get("/assign/tasks")).body;
-      return { owner, store, task, list, assigneePost, assigneePage, ownerPage };
+      // Only the Owner's row for the copy: the Template above it never has a status.
+      const ownerCopyRow = async () => ((await ownerPage()).split('<article class="task-row">').find((part: string) => part.includes(`/assign/tasks/${task._id}`)) || "").split("</article>")[0]!;
+      return { owner, store, task, list, assigneePost, assigneePage, ownerPage, ownerCopyRow };
     }
     it("offers exactly the valid status buttons on both pages", async () => {
       const scene = await assigned();
-      const bothPages = async () => [statusButtons(await scene.ownerPage()), statusButtons(await scene.assigneePage())];
+      const bothPages = async () => [statusButtons(await scene.ownerCopyRow()), statusButtons(await scene.assigneePage())];
       expect(await bothPages()).toEqual([["Blocked", "Done"], ["Blocked", "Done"]]);
       await scene.assigneePost("blocked");
       expect(await bothPages()).toEqual([["Done", "Reopen"], ["Done", "Reopen"]]);
@@ -705,16 +730,16 @@ describe("Task assignment workflow", () => {
     const linkPage = async (store: Awaited<ReturnType<typeof openAssignStore>>, listId: ObjectId) => (await app.inject({ method: "GET", url: `/l/${await activeCode(store, listId)}` })).body;
 
     it("tags only Tasks added after first assignment, through Done, revoke and reassign to another Person", async () => {
-      const { owner, store, id, task } = await seedTasks("addtag@example.com", ["Early", "Late"]);
-      await owner.post("/assign/lists", { name: "Tagged", taskIds: await id("Early") });
+      const { owner, store, id, task, tid } = await seedTasks("addtag@example.com", ["Early", "Late"]);
+      await owner.post("/assign/lists", { name: "Tagged", taskIds: await tid("Early") });
       const list = (await store.lists.findOne({ name: "Tagged" }))!;
-      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("Late") });
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await tid("Late") });
       const additional = (html: string) => (html.match(/Additional task/g) || []).length;
       expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(0);
       await owner.post(`/assign/lists/${list._id}/assign`, { person: "Sam" });
       expect(additional(await linkPage(store, list._id))).toBe(0);
       await owner.post("/assign/tasks", { title: "After" });
-      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("After") });
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await tid("After") });
       expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
       expect(additional(await linkPage(store, list._id))).toBe(1);
       await owner.post(`/assign/tasks/${(await task("After"))._id}/status`, { status: "done" });
@@ -726,19 +751,22 @@ describe("Task assignment workflow", () => {
       expect(additional((await owner.get(`/assign/lists/${list._id}`)).body)).toBe(1);
     });
 
-    it("enforces the one-List rule from both entry points", async () => {
-      const { owner, store, id } = await seedTasks("onelist@example.com", ["Mine", "Taken", "Free"]);
-      await owner.post("/assign/lists", { name: "One", taskIds: await id("Mine") });
-      await owner.post("/assign/lists", { name: "Two", taskIds: await id("Taken") });
+    it("accepts a Template into any number of Lists but never a copy, from both entry points", async () => {
+      const { owner, store, id, tid } = await seedTasks("onelist@example.com", ["Mine", "Taken", "Free"]);
+      await owner.post("/assign/lists", { name: "One", taskIds: await tid("Mine") });
+      await owner.post("/assign/lists", { name: "Two", taskIds: await tid("Taken") });
       const one = (await store.lists.findOne({ name: "One" }))!, two = (await store.lists.findOne({ name: "Two" }))!;
-      expect((await owner.post(`/assign/lists/${one._id}/add`, { taskId: await id("Taken") })).statusCode).toBe(400);
-      expect((await owner.post("/assign/lists/add-selected", { listId: one._id.toHexString(), taskIds: [await id("Taken"), await id("Free")] })).statusCode).toBe(400);
-      expect((await store.tasks.findOne({ title: "Free" }))!.listId).toBeUndefined();
-      expect((await store.tasks.findOne({ title: "Taken" }))!.listId).toEqual(two._id);
+      const takenCopy = await id("Taken");
+      expect(takenCopy).not.toBe(await tid("Taken"));
+      expect((await owner.post(`/assign/lists/${one._id}/add`, { taskId: takenCopy })).statusCode).toBe(400);
+      expect((await owner.post("/assign/lists/add-selected", { listId: one._id.toHexString(), taskIds: [takenCopy, await tid("Free")] })).statusCode).toBe(400);
+      expect(await store.tasks.countDocuments({ listId: one._id })).toBe(1);
       const picker = (await owner.get(`/assign/lists/${one._id}`)).body;
-      expect(picker).toContain(`value="${await id("Free")}"`); expect(picker).not.toContain(`value="${await id("Taken")}"`);
-      expect((await owner.post("/assign/lists/add-selected", { listId: one._id.toHexString(), taskIds: await id("Free") })).statusCode).toBe(303);
-      expect((await store.tasks.findOne({ title: "Free" }))!.listId).toEqual(one._id);
+      expect(picker).toContain(`value="${await tid("Free")}"`); expect(picker).toContain(`value="${await tid("Taken")}"`); expect(picker).not.toContain(`value="${takenCopy}"`);
+      expect((await owner.post(`/assign/lists/${one._id}/add`, { taskId: await tid("Taken") })).statusCode).toBe(303);
+      expect((await owner.post("/assign/lists/add-selected", { listId: two._id.toHexString(), taskIds: await tid("Free") })).statusCode).toBe(303);
+      expect((await store.tasks.findOne({ title: "Free", kind: "copy" }))!.listId).toEqual(two._id);
+      expect(await store.tasks.countDocuments({ title: "Taken", kind: "copy" })).toBe(2);
     });
 
     it("offers Add to List on the Tasks page with the Owner's existing Lists", async () => {
@@ -749,12 +777,12 @@ describe("Task assignment workflow", () => {
     });
 
     it("makes a completed List not completed again when a Task is added", async () => {
-      const { owner, store, id, task } = await seedTasks("reopen@example.com", ["Only", "More"]);
-      await owner.post("/assign/lists", { name: "Finished", taskIds: await id("Only"), person: "Sam" });
+      const { owner, store, id, task, tid } = await seedTasks("reopen@example.com", ["Only", "More"]);
+      await owner.post("/assign/lists", { name: "Finished", taskIds: await tid("Only"), person: "Sam" });
       const list = (await store.lists.findOne({ name: "Finished" }))!;
       await owner.post(`/assign/tasks/${(await task("Only"))._id}/status`, { status: "done" });
       expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeTruthy();
-      await owner.post("/assign/lists/add-selected", { listId: list._id.toHexString(), taskIds: await id("More") });
+      await owner.post("/assign/lists/add-selected", { listId: list._id.toHexString(), taskIds: await tid("More") });
       expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeUndefined();
       await owner.post(`/assign/tasks/${(await task("More"))._id}/status`, { status: "done" });
       expect((await store.lists.findOne({ _id: list._id }))!.completedAt).toBeTruthy();
@@ -766,8 +794,8 @@ describe("Task assignment workflow", () => {
     const removedSection = (html: string) => html.match(/<h2>Removed<\/h2>[^]*?<\/section>/)?.[0] || "";
 
     it("shows a deleted Task by its title as Removed, with no buttons or Note", async () => {
-      const { owner, store, id } = await seedTasks("rm-delete@example.com", ["Keep", "Doomed"]);
-      await owner.post("/assign/lists", { name: "Gone", taskIds: [await id("Keep"), await id("Doomed")], person: "Sam" });
+      const { owner, store, id, tid } = await seedTasks("rm-delete@example.com", ["Keep", "Doomed"]);
+      await owner.post("/assign/lists", { name: "Gone", taskIds: [await tid("Keep"), await tid("Doomed")], person: "Sam" });
       const list = (await store.lists.findOne({ name: "Gone" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/tasks/${await id("Doomed")}/delete`);
       const section = removedSection(await page(code));
@@ -776,40 +804,40 @@ describe("Task assignment workflow", () => {
     });
 
     it("shows both Done and not-Done removals but nothing for a Draft List", async () => {
-      const { owner, store, id } = await seedTasks("rm-done@example.com", ["Stay", "Finished", "Open", "DraftOne"]);
-      await owner.post("/assign/lists", { name: "Live", taskIds: [await id("Stay"), await id("Finished"), await id("Open")], person: "Sam" });
+      const { owner, store, id, tid } = await seedTasks("rm-done@example.com", ["Stay", "Finished", "Open", "DraftOne"]);
+      await owner.post("/assign/lists", { name: "Live", taskIds: [await tid("Stay"), await tid("Finished"), await tid("Open")], person: "Sam" });
       const live = (await store.lists.findOne({ name: "Live" }))!, code = await activeCode(store, live._id);
       await owner.post(`/assign/tasks/${await id("Finished")}/status`, { status: "done" });
       await owner.post(`/assign/lists/${live._id}/remove`, { taskId: await id("Finished") });
       await owner.post(`/assign/lists/${live._id}/remove`, { taskId: await id("Open") });
       const section = removedSection(await page(code));
       expect(section).toContain("Finished"); expect(section).toContain("Open");
-      await owner.post("/assign/lists", { name: "Sketch", taskIds: await id("DraftOne") });
+      await owner.post("/assign/lists", { name: "Sketch", taskIds: await tid("DraftOne") });
       const draft = (await store.lists.findOne({ name: "Sketch" }))!;
       await owner.post(`/assign/lists/${draft._id}/remove`, { taskId: await id("DraftOne") });
       await owner.post("/assign/tasks", { title: "DraftTwo" });
-      await owner.post(`/assign/lists/${draft._id}/add`, { taskId: await id("DraftTwo") });
+      await owner.post(`/assign/lists/${draft._id}/add`, { taskId: await tid("DraftTwo") });
       await owner.post(`/assign/tasks/${await id("DraftTwo")}/delete`);
       await owner.post(`/assign/lists/${draft._id}/assign`, { person: "Tia" });
       const draftCode = await activeCode(store, draft._id);
       expect(await page(draftCode)).not.toContain("Removed");
     });
 
-    it("clears the Removed row on re-add and tags the Task Additional", async () => {
-      const { owner, store, id } = await seedTasks("rm-readd@example.com", ["Base", "Back"]);
-      await owner.post("/assign/lists", { name: "Readd", taskIds: [await id("Base"), await id("Back")], person: "Sam" });
+    it("keeps the Removed row when the Template is added again as a new Additional Task", async () => {
+      const { owner, store, id, tid } = await seedTasks("rm-readd@example.com", ["Base", "Back"]);
+      await owner.post("/assign/lists", { name: "Readd", taskIds: [await tid("Base"), await tid("Back")], person: "Sam" });
       const list = (await store.lists.findOne({ name: "Readd" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Back") });
       expect(removedSection(await page(code))).toContain("Back");
-      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await id("Back") });
+      await owner.post(`/assign/lists/${list._id}/add`, { taskId: await tid("Back") });
       const html = await page(code);
-      expect(html).not.toContain("<h2>Removed</h2>");
+      expect(removedSection(html)).toContain("Back");
       expect(html).toMatch(/Back[^]*?Additional task/);
     });
 
     it("excludes Removed rows from progress and completes an all-Done remainder", async () => {
-      const { owner, store, id } = await seedTasks("rm-progress@example.com", ["One", "Two", "Three"]);
-      await owner.post("/assign/lists", { name: "Prog", taskIds: [await id("One"), await id("Two"), await id("Three")], person: "Sam" });
+      const { owner, store, id, tid } = await seedTasks("rm-progress@example.com", ["One", "Two", "Three"]);
+      await owner.post("/assign/lists", { name: "Prog", taskIds: [await tid("One"), await tid("Two"), await tid("Three")], person: "Sam" });
       const list = (await store.lists.findOne({ name: "Prog" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/tasks/${await id("One")}/status`, { status: "done" });
       await owner.post(`/assign/lists/${list._id}/remove`, { taskId: await id("Three") });
@@ -822,8 +850,8 @@ describe("Task assignment workflow", () => {
     });
 
     it("tells the open page and the Board feed when a Task is removed or deleted", async () => {
-      const { owner, store, id } = await seedTasks("rm-live@example.com", ["Base", "Out", "Zap"]);
-      await owner.post("/assign/lists", { name: "Feed", taskIds: [await id("Base"), await id("Out"), await id("Zap")], person: "Sam" });
+      const { owner, store, id, tid } = await seedTasks("rm-live@example.com", ["Base", "Out", "Zap"]);
+      await owner.post("/assign/lists", { name: "Feed", taskIds: [await tid("Base"), await tid("Out"), await tid("Zap")], person: "Sam" });
       const list = (await store.lists.findOne({ name: "Feed" }))!, code = await activeCode(store, list._id);
       const stream = await openStream(`/l/${code}/events`);
       try {
@@ -839,8 +867,8 @@ describe("Task assignment workflow", () => {
 
   describe("Retention: soft delete for analytics", () => {
     it("keeps a deleted Task with its reason and hides it everywhere", async () => {
-      const { owner, store, id, task } = await seedTasks("soft-task@example.com", ["Keeper", "Doomed"]);
-      await owner.post("/assign/lists", { name: "Chores", taskIds: [await id("Keeper"), await id("Doomed")], person: "Sam" });
+      const { owner, store, id, task, tid } = await seedTasks("soft-task@example.com", ["Keeper", "Doomed"]);
+      await owner.post("/assign/lists", { name: "Chores", taskIds: [await tid("Keeper"), await tid("Doomed")], person: "Sam" });
       const doomed = await task("Doomed");
       await owner.post(`/assign/tasks/${doomed._id}/status`, { status: "blocked", note: "stuck" });
       await owner.post(`/assign/tasks/${doomed._id}/delete`);
@@ -849,7 +877,7 @@ describe("Task assignment workflow", () => {
       expect(row.status).toBe("blocked"); expect(row.note).toBe("stuck");
       const list = (await store.lists.findOne({ name: "Chores" }))!, code = await activeCode(store, list._id);
       expect((await owner.get("/assign/tasks")).body).not.toContain(`/assign/tasks/${doomed._id}`);
-      expect((await owner.get("/assign/tasks")).body).toContain("All Tasks (1)");
+      expect((await owner.get("/assign/tasks")).body).toContain("All Tasks (3)"); // 2 Templates + 1 live copy; the removed copy is not counted
       expect((await owner.get(`/assign/tasks/${doomed._id}`)).statusCode).toBe(404);
       expect((await owner.post(`/assign/tasks/${doomed._id}/status`, { status: "done" })).statusCode).toBe(404);
       expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 1 done)");
@@ -862,8 +890,8 @@ describe("Task assignment workflow", () => {
     });
 
     it("keeps a deleted List, hides it, and ends its link and stream", async () => {
-      const { owner, store, id } = await seedTasks("soft-list@example.com", ["Item"]);
-      await owner.post("/assign/lists", { name: "Doomed List", taskIds: [await id("Item")], person: "Sam" });
+      const { owner, store, id, tid } = await seedTasks("soft-list@example.com", ["Item"]);
+      await owner.post("/assign/lists", { name: "Doomed List", taskIds: [await tid("Item")], person: "Sam" });
       const list = (await store.lists.findOne({ name: "Doomed List" }))!, code = await activeCode(store, list._id);
       await owner.post(`/assign/lists/${list._id}/delete`);
       const row = (await store.lists.findOne({ _id: list._id }))!;
@@ -873,13 +901,13 @@ describe("Task assignment workflow", () => {
       expect((await owner.get("/assign")).body).not.toContain("Doomed List");
       expect((await owner.get(`/assign/lists/${list._id}`)).statusCode).toBe(404);
       expect((await owner.post(`/assign/lists/${list._id}/edit`, { name: "x" })).statusCode).toBe(404);
-      expect((await owner.post("/assign/lists/add-selected", { listId: list._id.toHexString(), taskIds: await id("Item") })).statusCode).toBe(404);
+      expect((await owner.post("/assign/lists/add-selected", { listId: list._id.toHexString(), taskIds: await tid("Item") })).statusCode).toBe(404);
       expect((await app.inject({ method: "GET", url: `/l/${code}/events` })).statusCode).toBe(404);
     });
 
     it("keeps a deleted Person with their name, hides them, and lets the name be reused", async () => {
-      const { owner, store, id } = await seedTasks("soft-person@example.com", ["Job"]);
-      await owner.post("/assign/lists", { name: "Mine", taskIds: [await id("Job")], person: "Zed" });
+      const { owner, store, id, tid } = await seedTasks("soft-person@example.com", ["Job"]);
+      await owner.post("/assign/lists", { name: "Mine", taskIds: [await tid("Job")], person: "Zed" });
       const old = (await store.people.findOne({ name: "Zed" }))!;
       await owner.post(`/assign/people/${old._id}/delete`);
       const row = (await store.people.findOne({ _id: old._id }))!;
@@ -897,8 +925,8 @@ describe("Task assignment workflow", () => {
     });
 
     it("records doneAt when a Task is marked Done and keeps Done Tasks through housekeeping", async () => {
-      const { owner, store, id, task } = await seedTasks("soft-done@example.com", ["Finish"]);
-      await owner.post("/assign/lists", { name: "Fin", taskIds: [await id("Finish")], person: "Sam" });
+      const { owner, store, id, task, tid } = await seedTasks("soft-done@example.com", ["Finish"]);
+      await owner.post("/assign/lists", { name: "Fin", taskIds: [await tid("Finish")], person: "Sam" });
       const t = await task("Finish"), code = await activeCode(store, t.listId!);
       expect(t.doneAt).toBeUndefined();
       await postForm(`/l/${code}/tasks/${t._id}/status`, "status=done");
@@ -909,6 +937,96 @@ describe("Task assignment workflow", () => {
       expect(await store.tasks.countDocuments({ _id: t._id, status: "done", doneAt: { $exists: true } })).toBe(1);
       await postForm(`/l/${code}/tasks/${t._id}/status`, "status=open");
       expect((await store.tasks.findOne({ _id: t._id }))!.doneAt).toBeUndefined();
+    });
+  });
+
+  describe("Add to List copies a Template", () => {
+    const copiesOf = (store: Store, title: string) => store.tasks.find({ title, kind: "copy" }).sort({ createdAt: 1, _id: 1 }).toArray();
+    const template = async (store: Store, title: string) => (await store.tasks.findOne({ title, kind: "template" }))!;
+
+    it("gives each List an independent copy and leaves the Template in the main list", async () => {
+      const { owner, store } = await seedTasks("copy-two@example.com", []);
+      await owner.post("/assign/tasks", { title: "Water plants", instruction: "Twice", tags: "home", deadlineDate: "2099-01-02", deadlineTime: "10:00", timezoneOffset: "0" });
+      const source = (await store.tasks.findOne({ title: "Water plants" }))!;
+      await owner.post("/assign/lists", { name: "A" }); await owner.post("/assign/lists", { name: "B" });
+      const a = (await store.lists.findOne({ name: "A" }))!, b = (await store.lists.findOne({ name: "B" }))!;
+      expect((await owner.post(`/assign/lists/${a._id}/add`, { taskId: source._id.toHexString() })).statusCode).toBe(303);
+      expect((await owner.post("/assign/lists/add-selected", { listId: b._id.toHexString(), taskIds: source._id.toHexString() })).statusCode).toBe(303);
+      const copies = await copiesOf(store, "Water plants");
+      expect(copies).toHaveLength(2);
+      expect(copies.map(c => String(c.listId)).sort()).toEqual([String(a._id), String(b._id)].sort());
+      for (const c of copies) { expect(c.instruction).toBe("Twice"); expect(c.tags).toEqual(["home"]); expect(c.deadline).toEqual(source.deadline); expect(c.status).toBe("open"); expect(c.note).toBe(""); expect(c._id.equals(source._id)).toBe(false); }
+      const fresh = (await store.tasks.findOne({ _id: source._id }))!;
+      expect(fresh.kind).toBe("template"); expect(fresh.listId).toBeUndefined(); expect(fresh.deletedAt).toBeUndefined();
+      await owner.post(`/assign/tasks/${copies[0]!._id}/status`, { status: "blocked", note: "no water" });
+      const [first, second] = await copiesOf(store, "Water plants");
+      expect(first!.status).toBe("blocked"); expect(first!.note).toBe("no water");
+      expect(second!.status).toBe("open"); expect(second!.note).toBe("");
+      expect((await store.tasks.findOne({ _id: source._id }))!.status).toBe("open");
+    });
+
+    it("adds a Template to a new List at creation and again to others", async () => {
+      const { owner, store, id, tid } = await seedTasks("copy-create@example.com", ["Shared"]);
+      await owner.post("/assign/lists", { name: "One", taskIds: await tid("Shared") });
+      await owner.post("/assign/lists", { name: "Two", taskIds: await tid("Shared") });
+      expect(await copiesOf(store, "Shared")).toHaveLength(2);
+      expect((await store.lists.findOne({ name: "One" }))!.taskCount).toBe(1);
+      expect((await template(store, "Shared")).listId).toBeUndefined();
+    });
+
+    it("removes only the copy, keeps it hidden but retained, and leaves the Template in place", async () => {
+      const { owner, store, id, tid } = await seedTasks("copy-remove@example.com", ["Sweep"]);
+      await owner.post("/assign/lists", { name: "Chores", taskIds: await tid("Sweep"), person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Chores" }))!, code = await activeCode(store, list._id);
+      const [copy] = await copiesOf(store, "Sweep");
+      await owner.post(`/assign/lists/${list._id}/remove`, { taskId: copy!._id.toHexString() });
+      const row = (await store.tasks.findOne({ _id: copy!._id }))!;
+      expect(row.deletedAt).toBeInstanceOf(Date); expect(row.deleteReason).toBe("removed");
+      const tmpl = await template(store, "Sweep");
+      expect(tmpl.deletedAt).toBeUndefined();
+      expect((await owner.get("/assign/tasks")).body).toContain(`/assign/tasks/${tmpl._id}`);
+      expect((await owner.get("/assign/tasks")).body).not.toContain(`/assign/tasks/${copy!._id}`);
+      expect((await app.inject({ method: "GET", url: `/l/${code}` })).body).toMatch(/<h2>Removed<\/h2>[^]*Sweep/);
+      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 0 done)");
+      expect((await owner.post(`/assign/lists/${list._id}/add`, { taskId: tmpl._id.toHexString() })).statusCode).toBe(303);
+      expect(await copiesOf(store, "Sweep")).toHaveLength(2);
+    });
+
+    it("leaves copies unchanged when the Template is edited or deleted, retaining the Template row", async () => {
+      const { owner, store, id, tid } = await seedTasks("copy-edit@example.com", ["Original"]);
+      await owner.post("/assign/lists", { name: "Holder", taskIds: await tid("Original"), person: "Sam" });
+      const list = (await store.lists.findOne({ name: "Holder" }))!, code = await activeCode(store, list._id);
+      const tmpl = await template(store, "Original");
+      await owner.post(`/assign/tasks/${tmpl._id}/edit`, { title: "Renamed", instruction: "New", tags: "x" });
+      const [copy] = await copiesOf(store, "Original");
+      expect(copy!.instruction).toBe(""); expect(copy!.tags).toEqual([]);
+      expect(await store.tasks.countDocuments({ title: "Renamed", kind: "template" })).toBe(1);
+      await owner.post(`/assign/tasks/${tmpl._id}/delete`);
+      const gone = (await store.tasks.findOne({ _id: tmpl._id }))!;
+      expect(gone.deletedAt).toBeInstanceOf(Date); expect(gone.deleteReason).toBe("template-deleted");
+      const kept = (await store.tasks.findOne({ _id: copy!._id }))!;
+      expect(kept.deletedAt).toBeUndefined();
+      const page = (await app.inject({ method: "GET", url: `/l/${code}` })).body;
+      expect(page).toContain("Original"); expect(page).not.toContain("<h2>Removed</h2>");
+      expect((await owner.get(`/assign/lists/${list._id}`)).body).toContain("(0 of 1 done)");
+    });
+
+    it("sends the Additional Task only to that List's Owner and Assignee streams when a Template is added", async () => {
+      const { owner, store, id, tid } = await seedTasks("copy-live@example.com", ["Base", "Extra"]);
+      await owner.post("/assign/lists", { name: "Mine", taskIds: await tid("Base"), person: "Sam" });
+      await owner.post("/assign/lists", { name: "Other", taskIds: await tid("Base"), person: "Tia" });
+      const mine = (await store.lists.findOne({ name: "Mine" }))!, other = (await store.lists.findOne({ name: "Other" }))!;
+      const mineStream = await openStream(`/l/${await activeCode(store, mine._id)}/events`);
+      const otherStream = await openStream(`/l/${await activeCode(store, other._id)}/events`);
+      try {
+        await owner.post(`/assign/lists/${mine._id}/add`, { taskId: await tid("Extra") });
+        expect(await mineStream.readUntil("New Task added: Extra")).toContain("New Task added: Extra");
+        const html = (await app.inject({ method: "GET", url: `/l/${await activeCode(store, mine._id)}` })).body;
+        expect(html).toMatch(/Extra[^]*?Additional task/);
+        await new Promise(r => setTimeout(r, 200));
+        expect(await store.events.countDocuments({ kind: "list.add" })).toBe(1);
+        expect((await store.events.findOne({ kind: "list.add" }))!.listId).toEqual(mine._id);
+      } finally { mineStream.close(); otherStream.close(); }
     });
   });
 
