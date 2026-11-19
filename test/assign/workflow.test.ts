@@ -293,11 +293,46 @@ describe("Task assignment workflow", () => {
     await owner.post(`/assign/tasks/${task._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("Carry");
     const listPage = (await owner.get("/assign/tasks")).body;
-    expect(listPage).toMatch(/<dialog id="delete-list-[a-f\d]{24}"[^>]*>.*Revokes 1 active link and returns 0 Tasks.*<form method="post" action="\/assign\/lists\/[a-f\d]{24}\/delete" class="actions"><input type="hidden" name="csrf"/s);
+    expect(listPage).toMatch(/<dialog id="delete-list-[a-f\d]{24}"[^>]*>.*Revokes 1 active link and removes the List’s 0 Tasks.*Templates are untouched.*<form method="post" action="\/assign\/lists\/[a-f\d]{24}\/delete" class="actions"><input type="hidden" name="csrf"/s);
     expect((await owner.get(`/assign/lists/${list._id}/delete`)).body).toContain("Revokes 1 active link and");
     await owner.post(`/assign/lists/${list._id}/delete`);
     expect((await app.inject({ method: "GET", url: `/l/${assignment.code}` })).body).toContain("no longer available");
     expect((await store.tasks.findOne({ _id: template._id }))!.deletedAt).toBeUndefined();
+  });
+  it("duplicates a List with fresh copies and a new unassigned link, leaving the original alone", async () => {
+    const { owner, store, tid } = await seedTasks("dup@example.com", ["Sweep", "Mop"]);
+    await owner.post("/assign/lists", { name: "Kitchen", taskIds: [await tid("Sweep"), await tid("Mop")] });
+    const list = (await store.lists.findOne({ name: "Kitchen" }))!;
+    await owner.post(`/assign/lists/${list._id}/assign`, { person: "Omar" });
+    const sweep = (await store.tasks.findOne({ listId: list._id, title: "Sweep" }))!;
+    const deadline = new Date("2031-01-02T03:04:00Z");
+    await store.tasks.updateOne({ _id: sweep._id }, { $set: { status: "done", doneAt: new Date(), note: "private", deadline } });
+    const oldLink = (await store.assignments.findOne({ listId: list._id, active: true }))!;
+    const res = await owner.post(`/assign/lists/${list._id}/duplicate`);
+    const copy = (await store.lists.findOne({ name: "Kitchen (copy)" }))!;
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe(`/assign/tasks?rename=${copy._id}#list-${copy._id}`);
+    const fresh = await store.tasks.find({ listId: copy._id }).toArray();
+    expect(fresh.map(t => t.title).sort()).toEqual(["Mop", "Sweep"]);
+    expect(fresh.every(t => t.kind === "copy" && t.status === "open" && t.note === "" && !t.doneAt && !t.deletedAt)).toBe(true);
+    expect(fresh.find(t => t.title === "Sweep")!.deadline).toEqual(deadline);
+    const link = (await store.assignments.findOne({ listId: copy._id, active: true }))!;
+    expect(link.personId).toBeUndefined(); expect(link.code).not.toBe(oldLink.code);
+    expect((await app.inject({ method: "GET", url: `/l/${link.code}` })).statusCode).toBe(200);
+    const original = await store.tasks.findOne({ _id: sweep._id });
+    expect(original!.status).toBe("done"); expect(original!.note).toBe("private");
+    expect((await store.assignments.findOne({ _id: oldLink._id }))!.active).toBe(true);
+    expect(await store.tasks.countDocuments({ listId: list._id, deletedAt: { $exists: false } })).toBe(2);
+    expect((await owner.get(`/assign/tasks?rename=${copy._id}`)).body).toContain("data-rename");
+  });
+  it("shows the Delete List confirmation without the stale Unassigned Tasks wording", async () => {
+    const { owner, store, tid } = await seedTasks("delmsg@example.com", ["A"]);
+    await owner.post("/assign/lists", { name: "Msg", taskIds: await tid("A") });
+    const list = (await store.lists.findOne({ name: "Msg" }))!;
+    await owner.post(`/assign/lists/${list._id}/link`);
+    const body = (await owner.get(`/assign/lists/${list._id}/delete`)).body;
+    expect(body).toContain("Revokes 1 active link and removes the List’s 1 Task.");
+    expect(body).toContain("Templates are untouched."); expect(body).not.toContain("Unassigned Tasks");
   });
   it("retains a deleted List's copies with reason list-deleted and keeps the Template", async () => {
     const { owner, store, id, tid } = await seedTasks("copy-listdel@example.com", ["Keep me"]);
