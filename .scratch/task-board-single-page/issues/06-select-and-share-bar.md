@@ -4,7 +4,7 @@
 
 **Blocked by:** 04, 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Create makes the List, its copies and its link in one request and copies the link.
 - [ ] A blank name gets "List N"; a typed name is used.

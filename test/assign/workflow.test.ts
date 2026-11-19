@@ -803,7 +803,7 @@ describe("Task assignment workflow", () => {
       const { owner } = await seedTasks("offer@example.com", ["Solo"]);
       await owner.post("/assign/lists", { name: "Existing" });
       const html = (await owner.get("/assign/tasks")).body;
-      expect(html).toContain("Add to List"); expect(html).toMatch(/<select id="add-target" name="listId">[^]*Existing/);
+      expect(html).toContain("Add to existing"); expect(html).toMatch(/<select id="add-target" name="listId">[^]*Existing/);
     });
 
     it("makes a completed List not completed again when a Task is added", async () => {
@@ -1131,4 +1131,36 @@ describe("Task assignment workflow", () => {
     });
   });
 
+  it("creates a List with copies and its unassigned link in one request, auto-naming blank names", async () => {
+    const { owner, store, tid } = await seedTasks("bar@example.com", ["Mop", "Dust"]);
+    const both = [await tid("Mop"), await tid("Dust")];
+    const made = await owner.post("/assign/lists", { name: "", taskIds: both, link: "1" });
+    expect(made.statusCode).toBe(200);
+    const body = made.json() as { url: string; listId: string };
+    expect(body.url).toMatch(/^http:\/\/assign\.test\/l\/[A-Za-z0-9]{10}$/);
+    const first = (await store.lists.findOne({ _id: new ObjectId(body.listId) }))!;
+    expect(first.name).toBe("List 1"); expect(first.taskCount).toBe(2);
+    expect(await store.tasks.countDocuments({ listId: first._id, kind: "copy" })).toBe(2);
+    const link = (await store.assignments.findOne({ listId: first._id, active: true }))!;
+    expect(link.personId).toBeUndefined(); expect(body.url.endsWith(link.code)).toBe(true);
+    const typed = (await owner.post("/assign/lists", { name: "Kitchen", taskIds: both[0]!, link: "1" })).json() as { listId: string };
+    expect((await store.lists.findOne({ _id: new ObjectId(typed.listId) }))!.name).toBe("Kitchen");
+    const next = (await owner.post("/assign/lists", { name: "  ", taskIds: both[1]!, link: "1" })).json() as { listId: string };
+    expect((await store.lists.findOne({ _id: new ObjectId(next.listId) }))!.name).toBe("List 3");
+    expect((await owner.post("/assign/lists", { name: "", taskIds: [], link: "1" })).statusCode).toBe(400);
+  });
+  it("adds ticked Templates to an existing List that already has a live link as Additional Tasks", async () => {
+    const { owner, store, tid } = await seedTasks("bar2@example.com", ["Mop", "Dust"]);
+    const made = (await owner.post("/assign/lists", { name: "", taskIds: await tid("Mop"), link: "1" })).json() as { listId: string };
+    expect((await owner.post("/assign/lists/add-selected", { listId: made.listId, taskIds: await tid("Dust") })).statusCode).toBe(303);
+    const added = (await store.tasks.findOne({ listId: new ObjectId(made.listId), title: "Dust", kind: "copy" }))!;
+    expect(added.addedToListAt).toBeDefined();
+  });
+  it("shows the select-and-share bar with Create list & copy link, Add to existing and Clear", async () => {
+    const { owner } = await seedTasks("bar3@example.com", ["Mop"]);
+    const page = (await owner.get("/assign/tasks")).body;
+    expect(page).toContain("Create list &amp; copy link"); expect(page).toContain("Add to existing"); expect(page).toContain("Clear");
+    expect(page).toContain("Create list &amp; copy link button");
+    expect(page).not.toContain("tap Add to List");
+  });
 });
