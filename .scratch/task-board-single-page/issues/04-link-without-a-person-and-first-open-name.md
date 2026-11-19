@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Creating a link needs no name; pressing again returns the same link and creates nothing new.
 - [ ] A first visit asks for a name; a later visit, on the same or another device, does not.
