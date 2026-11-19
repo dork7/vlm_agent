@@ -629,12 +629,12 @@ describe("Task assignment workflow", () => {
       await owner.post(`/assign/tasks/${task._id}/status`, { status: "done" });
       for (const body of [(await app.inject({ method: "GET", url: link })).body, await ownerRow()]) expect(summaryOf(body)).not.toContain("Overdue");
     });
-    it("reveals the Blocked Note first by cancelling the button's submit, and still posts status=blocked without script", async () => {
+    it("shows one Note box that Blocked posts along with, with no hidden second Note", async () => {
       const { link } = await dueTask();
       const body = (await app.inject({ method: "GET", url: link })).body;
-      expect(body).toContain('<button name="status" value="blocked" data-block>Blocked</button>');
-      expect(body).toMatch(/closest\('\[data-block\]'\);if\(!b\)return;e\.preventDefault\(\)/);
-      expect(body).toMatch(/<div data-block-note hidden>[\s\S]*?<button name="status" value="blocked">Save Blocked<\/button>/);
+      expect(body).toContain('<button name="status" value="blocked">Blocked</button>');
+      expect(body).not.toContain("<div data-block-note");
+      expect(body.match(/>Note<\/label>/g)).toHaveLength(1);
     });
     it("lets the Owner change and clear a Deadline but not the Assignee", async () => {
       const { owner, store, task, link } = await dueTask();
@@ -717,7 +717,7 @@ describe("Task assignment workflow", () => {
   });
 
   describe("status buttons and collapsed Tasks", () => {
-    const statusButtons = (html: string) => [...html.matchAll(/<button[^>]*name="status"[^>]*>(.*?)<\/button>/g)].map(m => m[1]!).filter(label => label !== "Save Blocked");
+    const statusButtons = (html: string) => [...html.matchAll(/<button[^>]*name="status"[^>]*>(.*?)<\/button>/g)].map(m => m[1]!).filter(label => label !== "Save Blocked" && label !== "Save note");
     const outsideDetails = (html: string) => { let depth = 0, out = ""; for (const part of html.split(/(<\/?details[^>]*>)/)) { if (/^<details/.test(part)) depth++; else if (part === "</details>") depth--; else if (!depth) out += part; } return out; };
     const rowParts = (html: string) => { const m = html.match(/<details>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/); return { summary: m![1]!, body: m![2]! }; };
     async function assigned() {
@@ -747,7 +747,9 @@ describe("Task assignment workflow", () => {
     });
     it("lets Blocked be posted as a plain form submit", async () => {
       const scene = await assigned();
-      expect(await scene.assigneePage()).toMatch(/<button[^>]*name="status"[^>]*value="blocked"[^>]*data-block|<button[^>]*data-block[^>]*name="status"[^>]*value="blocked"/);
+      const page = await scene.assigneePage();
+      expect(page).toContain('<button name="status" value="blocked">Blocked</button>');
+      expect(page.match(/>Note<\/label>/g)).toHaveLength(1);
     });
     it("reopens a Done Task in one click, from the collapsed row, and clears the completed List", async () => {
       const scene = await assigned();
@@ -772,7 +774,7 @@ describe("Task assignment workflow", () => {
         for (const hidden of ["badge", "Deadline", "Use small boxes", "move"]) expect(summary).not.toContain(hidden);
         for (const shown of ["Use small boxes", "move", "Deadline"]) expect(body).toContain(shown);
       }
-      expect(rowParts(await scene.assigneePage()).body).toContain("Need paint");
+      expect(await scene.assigneePage()).toContain("Need paint");
     });
     it("marks Templates and copies draggable and Lists and the Templates area as drop targets", async () => {
       const scene = await assigned();
