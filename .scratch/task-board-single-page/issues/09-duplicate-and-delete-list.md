@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 04, 08
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Duplicate gives a new List with fresh copies, a new unassigned link, no Person, cleared Notes and open status; the original is unchanged.
 - [ ] Delete asks for confirmation naming the active link and the copies that go.
