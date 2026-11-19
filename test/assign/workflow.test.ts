@@ -736,6 +736,17 @@ describe("Task assignment workflow", () => {
       }
       expect(rowParts(await scene.assigneePage()).body).toContain("Need paint");
     });
+    it("marks Templates and copies draggable and Lists and the Templates area as drop targets", async () => {
+      const scene = await assigned();
+      await scene.owner.post("/assign/tasks", { title: "Drag me" });
+      const html = await scene.ownerPage();
+      const tid = /<li class="tpl-row" draggable="true" data-drag-template="([0-9a-f]{24})"/.exec(html);
+      expect(tid).not.toBeNull();
+      expect(html).toMatch(/<details class="list-row" id="list-([0-9a-f]{24})" data-drop-list="\1" data-add-url="\/assign\/lists\/\1\/add"/);
+      expect(html).toContain("data-drop-templates");
+      expect(html).toMatch(/<li class="copy-item [a-z]+" draggable="true" data-drag-copy="[0-9a-f]{24}" data-remove-url="\/assign\/lists\/[0-9a-f]{24}\/remove"/);
+      expect(html).toContain('name="taskIds"');
+    });
     it("shows a Template as one row with checkbox, title and list count, keeping its details off the board", async () => {
       const scene = await assigned();
       await scene.owner.post("/assign/tasks", { title: "Loose task", instruction: "Secret detail" });
