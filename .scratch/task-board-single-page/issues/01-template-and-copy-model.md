@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `kind` exists on Tasks and the backfill gives every existing Task the right value, leaving List membership and data intact.
 - [ ] Running the backfill twice changes nothing.
