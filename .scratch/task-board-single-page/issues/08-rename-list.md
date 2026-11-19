@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Rename saves on Enter and blur, cancels on Esc, ignores an empty name.
 - [ ] The name limit is enforced on the server with a clear message.

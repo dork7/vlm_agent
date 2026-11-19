@@ -1072,6 +1072,47 @@ describe("Task assignment workflow", () => {
     });
   });
 
+  describe("Rename a List inline", () => {
+    const setup = async (email: string) => {
+      const ctxs = await seedTasks(email, ["Item"]);
+      await ctxs.owner.post("/assign/lists", { name: "Kitchen", taskIds: await ctxs.tid("Item"), person: "Sam" });
+      return { ...ctxs, list: (await ctxs.store.lists.findOne({ name: "Kitchen" }))! };
+    };
+    it("renames a List, trims it, and keeps the old name when the new one is empty", async () => {
+      const { owner, store, list } = await setup("rename-ok@example.com");
+      expect((await owner.post(`/assign/lists/${list._id}/edit`, { name: "  Bar  " })).statusCode).toBe(303);
+      expect((await store.lists.findOne({ _id: list._id }))!.name).toBe("Bar");
+      expect((await owner.post(`/assign/lists/${list._id}/edit`, { name: "   " })).statusCode).toBe(303);
+      expect((await store.lists.findOne({ _id: list._id }))!.name).toBe("Bar");
+      expect(await store.events.countDocuments({ kind: "list.edit" })).toBe(1);
+    });
+    it("limits List names to 80 characters with a clear message", async () => {
+      const { owner, store, list } = await setup("rename-limit@example.com");
+      const tooLong = await owner.post(`/assign/lists/${list._id}/edit`, { name: "x".repeat(81) });
+      expect(tooLong.statusCode).toBe(400); expect(tooLong.body).toContain("80 characters");
+      expect((await store.lists.findOne({ _id: list._id }))!.name).toBe("Kitchen");
+      expect((await owner.post(`/assign/lists/${list._id}/edit`, { name: "y".repeat(80) })).statusCode).toBe(303);
+    });
+    it("offers a pencil link per List and opens the List when asked to rename it", async () => {
+      const { owner, list } = await setup("rename-ui@example.com");
+      const html = (await owner.get("/assign/tasks")).body;
+      expect(html).toContain(`href="/assign/tasks?rename=${list._id}#list-${list._id}"`);
+      expect(html).not.toMatch(/ data-rename[ >]/);
+      const asked = (await owner.get(`/assign/tasks?rename=${list._id}`)).body;
+      expect(asked).toMatch(new RegExp(`<details class="list-row" id="list-${list._id}" open data-rename`));
+    });
+    it("shows the new name on an Assignee's open page through the live stream", async () => {
+      const { owner, store, list } = await setup("rename-live@example.com");
+      const code = await activeCode(store, list._id);
+      const stream = await openStream(`/l/${code}/events`);
+      try {
+        await owner.post(`/assign/lists/${list._id}/edit`, { name: "Bar" });
+        expect(await stream.readUntil("event: change")).toContain("event: change");
+        expect((await app.inject({ method: "GET", url: `/l/${code}` })).body).toContain("<title>Bar</title>");
+      } finally { stream.close(); }
+    });
+  });
+
   describe("Single-page board", () => {
     const section = (html: string, cls: string) => html.match(new RegExp(`<(section|aside)[^>]*class="${cls}"[\\s\\S]*?</\\1>`))?.[0] || "";
     it("quick-add creates a Template that shows straight away in the Templates column, with a checkbox and an in-N-lists label", async () => {
