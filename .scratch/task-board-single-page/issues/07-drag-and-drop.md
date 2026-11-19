@@ -4,7 +4,7 @@
 
 **Blocked by:** 03, 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Dropping a Template on a List adds a copy; the Template stays.
 - [ ] Dragging a ticked Template moves all ticked ones.
