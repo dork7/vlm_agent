@@ -44,6 +44,10 @@ _Avoid_: Request, question, lookup
 A request to change information held in an Inventory. Not supported yet.
 _Avoid_: Action, update, write
 
+**Research**:
+A request to find something out that isn't in the Inventory, answered from the web and the person's own Notes and Tasks, with the sources it drew on.
+_Avoid_: Search, lookup, web query
+
 **Heading**:
 A short AI-written line naming the most important point of a Note or Task.
 _Avoid_: Title, subject, summary

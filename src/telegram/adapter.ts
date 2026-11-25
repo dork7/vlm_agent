@@ -12,6 +12,7 @@ import type {
   ListedNote,
   ListedTask,
   ReminderEvent,
+  ResearchSources,
   ShownItem,
 } from "../core/core.ts";
 import { formatDay } from "../time.ts";
@@ -50,22 +51,51 @@ const PROCESSED_BY: Record<EventSource["processedBy"], string> = {
   openrouter: "Processed by OpenRouter",
   local: "Processed by local AI",
 };
-const GREETING = [
-  "Hi! Here's what I can do. Type or send a Voice Message and I'll:",
-  "• Save it as a Note, for anything you want to remember",
-  '• Save it as a Task, with a due date if you give one ("call the supplier Thursday at 3")',
-  "• Send you a Reminder when a Task is due, with a Done button",
-  '• Show your Tasks or Notes when you ask, e.g. "show tasks", "what\'s due tomorrow?" or "show notes"',
-  '• Change, complete or delete a Note or Task, e.g. "move the supplier call to Monday"; I\'ll show it and ask you to confirm first',
-  '• Answer questions about the Inventory, e.g. "how many blue mugs do we have?"',
-  "You can also see and edit everything on the dashboard.",
-].join("\n");
+const NOTHING_FOUND = "I couldn't find anything about that in your Notes or Tasks.";
+/** Room for one page of a reply under Telegram's 4096-character message limit, leaving space for the source line. */
+const PAGE_LIMIT = 4000;
+const GREETING = "Hi! Send me a message or a Voice Message to save a Note or Task, or to research something. What would you like to do?";
+/** What each button under the greeting asks the User to send next. */
+const HINTS = {
+  note: 'Send me the Note, typed or as a Voice Message, e.g. "Ahmed at Gulf Packaging is on extension 214".',
+  task: 'Send me the Task, with when it\'s due if it has a time, e.g. "call the supplier Thursday at 3".',
+  research: 'Tell me what to find out, e.g. "find out the VAT rate on exports". I\'ll look on the web and in your Notes and Tasks.',
+  other:
+    "Tell me what you need, typed or as a Voice Message, and I'll work out the rest. Type options to see every option. " +
+    'I can also show your Tasks or Notes ("what\'s due tomorrow?"), change or delete one, or answer Inventory questions.',
+};
+/** A tapped greeting button's data: `hint:<what the User wants to do>`. */
+const HINT_BUTTON = /^hint:(note|task|research|other)$/;
+const greetingButtons = () =>
+  new InlineKeyboard()
+    .text("Add Note", "hint:note")
+    .text("Add Task", "hint:task")
+    .row()
+    .text("Research", "hint:research")
+    .text("Something else", "hint:other");
+/** Typing "options", or /options, shows every option as a button; nothing is filed. */
+const OPTIONS_REQUEST = /^\s*options\s*$/i;
+const OPTIONS_QUESTION = "What would you like to do?";
+const optionsButtons = () =>
+  new InlineKeyboard()
+    .text("Add Note", "hint:note")
+    .text("Add Task", "hint:task")
+    .row()
+    .text("Show Tasks", "list:tasks")
+    .text("Show Notes", "list:notes")
+    .row()
+    .text("Research", "hint:research")
+    .text("Something else", "hint:other");
+/** A tapped Show Tasks or Show Notes button's data: `list:tasks|notes`. */
+const LIST_BUTTON = /^list:(tasks|notes)$/;
 
 /** The Telegram Channel: turns updates into inbound messages and core events into Telegram calls. */
 export function createTelegramBot(token: string, core: Core, config?: BotConfig<Context>): Bot {
   const bot = new Bot(token, config);
 
-  bot.command("start", (ctx) => ctx.reply(GREETING));
+  bot.command("start", (ctx) => ctx.reply(GREETING, { reply_markup: greetingButtons() }));
+  bot.command("options", (ctx) => ctx.reply(OPTIONS_QUESTION, { reply_markup: optionsButtons() }));
+  bot.hears(OPTIONS_REQUEST, (ctx) => ctx.reply(OPTIONS_QUESTION, { reply_markup: optionsButtons() }));
   // Other bot commands are not messages to file.
   bot.on("message:text").filter((ctx) => !ctx.entities("bot_command").some((e) => e.offset === 0), (ctx) => {
     // Acknowledge the update straight away and process the message in the background.
@@ -98,6 +128,20 @@ export function createTelegramBot(token: string, core: Core, config?: BotConfig<
       // The question's message is edited into the result.
       replyId: ctx.callbackQuery.message?.message_id,
     });
+  });
+
+  // A hint is a new message, so the greeting keeps its buttons.
+  bot.callbackQuery(HINT_BUTTON, async (ctx) => {
+    const [, wanted] = ctx.match as [string, keyof typeof HINTS];
+    void ctx.answerCallbackQuery().catch((error) => console.error("Failed to answer a button tap", error));
+    await ctx.reply(HINTS[wanted]);
+  });
+
+  // The list is a new message, so the options keep their buttons.
+  bot.callbackQuery(LIST_BUTTON, (ctx) => {
+    const [, what] = ctx.match as [string, "tasks" | "notes"];
+    void ctx.answerCallbackQuery().catch((error) => console.error("Failed to answer a button tap", error));
+    void handleMessage(ctx, core, { messageId: `callback:${ctx.callbackQuery.id}`, content: { kind: "list", what } });
   });
 
   bot.callbackQuery(DONE_BUTTON, (ctx) => {
@@ -168,7 +212,7 @@ async function handleMessage(
       return;
     }
     // The reply ends by saying which side's model processed the message; a failure says nothing about it.
-    const signed = (text: string) => (source ? `${text}\n\n${PROCESSED_BY[source.processedBy]}` : text);
+    const signed = (text: string) => (source ? `${text}\n\n${processedBy(source)}` : text);
     if (event.type === "clarification-needed") {
       const buttons = new InlineKeyboard();
       for (const option of event.options) buttons.text(OPTION_LABELS[option], `clarify:${event.clarificationId}:${option}`);
@@ -180,6 +224,7 @@ async function handleMessage(
         .text("Cancel", `change:${event.changeId}:no`);
       return show(signed(formatChange(event.action, event.before, event.after)), buttons);
     }
+    if (event.type === "result" && event.result.kind === "greeted") return show(signed(GREETING), greetingButtons());
     // A reply too long for one Telegram message continues in new ones; the source goes at the very end.
     const pages = resultPages(event.result);
     const last = pages.length - 1;
@@ -194,6 +239,11 @@ async function handleMessage(
     console.error("Failed to process Telegram message", error);
     await show(FAILURE).catch((replyError) => console.error("Failed to send failure reply", replyError));
   }
+}
+
+/** "Processed by OpenRouter (model)"; just the side when the model's name is unknown. */
+function processedBy(source: EventSource): string {
+  return source.model ? `${PROCESSED_BY[source.processedBy]} (${source.model})` : PROCESSED_BY[source.processedBy];
 }
 
 /** The reply's text, as one Telegram message per page; only a Notes list can need more than one. */
@@ -211,6 +261,10 @@ function resultText(result: Exclude<Extract<CoreEvent, { type: "result" }>["resu
       return formatTaskList(result.tasks, result.more, result.date);
     case "query-answered":
       return result.answer;
+    case "researched":
+      return formatResearch(result.answer, result.sources);
+    case "nothing-found":
+      return NOTHING_FOUND;
     case "command-declined":
       return COMMAND_DECLINED;
     case "greeted":
@@ -262,21 +316,41 @@ function formatDue(due: Due): string {
 /** Each Note's heading and text, packed into pages that leave room under Telegram's 4096-character limit for the source line. */
 function formatNoteList(notes: ListedNote[]): string[] {
   if (notes.length === 0) return ["You have no Notes yet."];
-  const pageLimit = 4000;
   const blocks = notes.flatMap((note, index) => {
     const block = `${index + 1}. ${note.heading}\n${note.text}`;
     // A Note longer than a whole page is cut across pages.
     const pieces = [];
-    for (let start = 0; start < block.length; start += pageLimit) pieces.push(block.slice(start, start + pageLimit));
+    for (let start = 0; start < block.length; start += PAGE_LIMIT) pieces.push(block.slice(start, start + PAGE_LIMIT));
     return pieces;
   });
   const pages = ["Your Notes:"];
   for (const block of blocks) {
     const current = pages.at(-1)!;
-    if (current.length + 2 + block.length <= pageLimit) pages[pages.length - 1] = `${current}\n\n${block}`;
+    if (current.length + 2 + block.length <= PAGE_LIMIT) pages[pages.length - 1] = `${current}\n\n${block}`;
     else pages.push(block);
   }
   return pages;
+}
+
+/**
+ * The answer, then its sources, as one page. A long answer is cut to leave room for the sources; sources that still
+ * don't fit are left out whole, so no link or Heading is ever cut short.
+ */
+function formatResearch(answer: string, sources: ResearchSources): string {
+  const lines = [
+    ...sources.web.map((page) => (page.title === page.url ? `• ${page.url}` : `• ${page.title}: ${page.url}`)),
+    ...sources.items.map((item) => `• Your ${ITEM_LABELS[item.kind]}: ${item.heading}`),
+  ];
+  /** The answer keeps at least this much room, however many sources there are. */
+  const answerRoom = Math.max(PAGE_LIMIT - "\n\nSources:".length - lines.reduce((sum, line) => sum + 1 + line.length, 0), PAGE_LIMIT / 2);
+  const text = answer.length > answerRoom ? `${answer.slice(0, answerRoom - 1)}…` : answer;
+  let page = text;
+  for (const [index, line] of lines.entries()) {
+    const next = `${page}${index === 0 ? "\n\nSources:" : ""}\n${line}`;
+    if (next.length > PAGE_LIMIT) break;
+    page = next;
+  }
+  return page;
 }
 
 function formatTaskList(tasks: ListedTask[], more: number, date: string | null): string {

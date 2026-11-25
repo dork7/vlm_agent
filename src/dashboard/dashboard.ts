@@ -154,6 +154,11 @@ export const dashboardRoutes: FastifyPluginAsync<DashboardOptions> = async (app,
     return render(reply, "notes", { notes, search, saved: (instant: Date) => shownTime(request.user, instant) });
   });
 
+  /** The realtime talking agent's web page. */
+  app.get("/realtime", async (_request, reply) => {
+    return render(reply, "realtime", {});
+  });
+
   /** One of the User's own Notes; anyone else's, or none, is not found. */
   const ownNote = (user: UserDoc, id: string) => findOwn(database.notes, user._id!, id);
 
