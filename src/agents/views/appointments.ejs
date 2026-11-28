@@ -1,0 +1,17 @@
+<%- include("../../dashboard/views/header", { title: bot.name + " appointments" }) %>
+<h1><%= bot.name %>: appointments</h1>
+<p><a href="/agents/bots/<%= bot._id %>">← Bot</a></p>
+<% if (bot.propertyAgent.telegramId === null) { %><p class="warn">No Property Agent is linked, so customers cannot book viewings.</p><% } else { %><p>Property Agent: <%= bot.propertyAgent.name || 'linked' %> (Telegram ID <%= bot.propertyAgent.telegramId %>).</p><% } %>
+<p class="row-actions"><a href="/agents/bots/<%= bot._id %>/appointments"<%= state ? '' : ' aria-current=page' %>>All</a>
+<% for (const s of states) { %><a href="/agents/bots/<%= bot._id %>/appointments?state=<%= s %>"<%= state === s ? ' aria-current=page' : '' %>><%= s %></a><% } %></p>
+<% if (appointments.length === 0) { %><p>No appointments<%= state ? ' in this state' : ' yet' %>.</p><% } else { %>
+<div class="table-scroll"><table>
+  <thead><tr><th>Requested</th><th>Customer</th><th>Listing</th><th>Viewing time</th><th>State</th></tr></thead>
+  <tbody>
+  <% for (const a of appointments) { %>
+    <tr><td><%= shown(a.createdAt) %></td><td><%= a.customer.name || a.customer.chatId %> (<%= a.customer.channel %>)</td><td><%= a.listingSummary %></td><td><%= shown(a.scheduledFor) %></td><td><%= a.state %></td></tr>
+  <% } %>
+  </tbody>
+</table></div>
+<% } %>
+<%- include("../../dashboard/views/footer") %>

@@ -1,0 +1,36 @@
+<%- include("../../dashboard/views/header", { title: "Agent Bots" }) %>
+<%- include("../../dashboard/views/page-heading", { title: "Agent Bots", description: "Telegram bots that answer from a Dataset.", count: bots.length, countLabel: "bots" }) %>
+<p class="row-actions"><a href="/agents/bots/new">New bot</a> <a href="/agents/datasets/new">New Dataset</a></p>
+<h2>Bots</h2>
+<% if (bots.length === 0) { %><p>No bots yet. Import a Dataset first, then create a bot.</p><% } else { %>
+<div class="table-scroll"><table>
+  <thead><tr><th>Name</th><th>Dataset</th><th>Status</th><th>Property Agent</th><th>Links</th></tr></thead>
+  <tbody>
+  <% for (const bot of bots) { const st = statusOf(bot); %>
+    <tr>
+      <td><a href="/agents/bots/<%= bot._id %>"><%= bot.name %></a></td>
+      <td><%= datasetName(bot.datasetId) %></td>
+      <td><span class="status status-<%= st.state === 'error' ? 'failed' : st.state === 'running' ? 'succeeded' : 'in-progress' %>"><%= st.state %></span><% if (st.error) { %><br><span class="err"><%= st.error %></span><% } %></td>
+      <td><% if (bot.propertyAgent.telegramId !== null) { %>Linked<% } else { %><span class="warn">Not linked</span><% } %></td>
+      <td><a href="/agents/bots/<%= bot._id %>/logs">Chats</a> · <a href="/agents/bots/<%= bot._id %>/appointments">Appointments</a></td>
+    </tr>
+  <% } %>
+  </tbody>
+</table></div>
+<% } %>
+<h2>Datasets</h2>
+<% if (datasets.length === 0) { %><p>No Datasets yet.</p><% } else { %>
+<div class="table-scroll"><table>
+  <thead><tr><th>Name</th><th>File</th><th>Rows</th><th>Mapping</th><th>Missing images</th></tr></thead>
+  <tbody>
+  <% for (const d of datasets) { %>
+    <tr>
+      <td><a href="/agents/datasets/<%= d._id %>"><%= d.name %></a></td>
+      <td><%= d.sourceFile %></td><td><%= d.rowCount %></td>
+      <td><%= d.mapping ? "Set" : "Needs mapping" %></td><td><%= d.missingImages.length %></td>
+    </tr>
+  <% } %>
+  </tbody>
+</table></div>
+<% } %>
+<%- include("../../dashboard/views/footer") %>

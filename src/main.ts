@@ -15,6 +15,7 @@ import { createTts } from "./realtime/tts.ts";
 import { loadLiveKitConfig } from "./voice/config.ts";
 import { loadAssignConfig } from "./assign/config.ts";
 import { consoleMailer, resendMailer } from "./assign/mailer.ts";
+import { createAgents } from "./agents/index.ts";
 
 async function main() {
   let config, livekit;
@@ -66,6 +67,12 @@ async function main() {
     defaultTimezone: config.defaultTimezone,
     markdownDir: config.markdownDir,
   });
+  const agents = await createAgents({
+    database,
+    openRouter: config.openRouter,
+    defaultTimezone: config.defaultTimezone,
+    datasetDir: process.env.DATASET_DIR?.trim() || "./dataset",
+  });
   const bot = createTelegramBot(config.telegram.botToken, core);
   try {
     await bot.init();
@@ -91,6 +98,7 @@ async function main() {
       tts,
       defaultTimezone: config.defaultTimezone,
     },
+    agents: agents.routes,
     ...(assignConfig ? { assign: { db: database.db, config: assignConfig, mailer: assignConfig.resend ? resendMailer(assignConfig.resend.apiKey, assignConfig.resend.from) : consoleMailer() } } : {}),
     ...(mode.kind === "webhook"
       ? { webhook: { path: mode.path, handler: telegramWebhookHandler(bot, mode.secretToken) } }
@@ -105,6 +113,7 @@ async function main() {
 
   const shutdown = async () => {
     stopReminders();
+    await agents.manager.stopAll();
     // In webhook mode the webhook stays registered, so Telegram keeps updates until the bot is back.
     if (mode.kind === "polling") await bot.stop();
     await server.close();
@@ -115,6 +124,7 @@ async function main() {
   process.once("SIGTERM", shutdown);
 
   await server.listen({ port: config.port, host: config.host });
+  await agents.manager.startAll();
 
   if (mode.kind === "webhook") {
     await bot.api.setWebhook(mode.url, { secret_token: mode.secretToken });

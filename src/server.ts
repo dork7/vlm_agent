@@ -3,6 +3,7 @@ import { dashboardRoutes, type DashboardOptions } from "./dashboard/dashboard.ts
 import { inventoryRoutes, type InventoryApiOptions } from "./inventory/api.ts";
 import { realtimePlugin, type RealtimeOptions } from "./realtime/websocket.ts";
 import { assignRoutes, type AssignOptions } from "./assign/index.ts";
+import { agentsRoutes, type AgentsOptions } from "./agents/http.ts";
 
 export function buildServer(options: {
   logger?: boolean;
@@ -14,15 +15,19 @@ export function buildServer(options: {
   /** The realtime talking agent's local TTS and AI deps. */
   realtime?: RealtimeOptions;
   assign?: AssignOptions;
+  /** The Agent Bots console, under /agents. */
+  agents?: AgentsOptions;
 }): FastifyInstance {
   const server = Fastify({ trustProxy: options.assign?.config.trustProxy ?? false, logger: options.logger === false ? false : {
     serializers: { req: (request) => ({ method: request.method, url: request.url?.replace(/\/l\/[A-Za-z0-9]{10}/g, "/l/[redacted]").replace(/([?&]token=)[^&]+/g, "$1[redacted]") }) },
   } });
+  server.decorate("agentsPage", options.agents !== undefined);
   server.get("/health", async () => ({ status: "ok" }));
   server.register(inventoryRoutes, { prefix: "/inventory", ...options.inventory });
   if (options.webhook) server.post(options.webhook.path, options.webhook.handler);
   if (options.dashboard) server.register(dashboardRoutes, options.dashboard);
   if (options.realtime) server.register(realtimePlugin, options.realtime);
   if (options.assign) server.register(assignRoutes, options.assign);
+  if (options.agents) server.register(agentsRoutes, { prefix: "/agents", ...options.agents });
   return server;
 }

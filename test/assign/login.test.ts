@@ -115,7 +115,7 @@ describe("Task assignment login", () => {
     const unavailable = await app.inject("/l/AbCd123456");
     for (const response of [login, unavailable]) {
       expect(response.body).toContain("prefers-color-scheme: light");
-      expect(response.body).toContain("Appearance:");
+      expect(response.body).toContain("Theme:");
       expect(response.body).toContain("aria-live");
       expect(response.body).toContain("--surface-1");
     }

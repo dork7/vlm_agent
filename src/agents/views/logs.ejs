@@ -1,0 +1,25 @@
+<%- include("../../dashboard/views/header", { title: bot.name + " chats" }) %>
+<h1><%= bot.name %>: chats</h1>
+<p><a href="/agents/bots/<%= bot._id %>">← Bot</a></p>
+<% if (chats.length) { %>
+<p class="row-actions"><a href="/agents/bots/<%= bot._id %>/logs"<%= chat ? '' : ' aria-current=page' %>>All chats</a>
+<% for (const c of chats) { %><a href="/agents/bots/<%= bot._id %>/logs?chat=<%= encodeURIComponent(c._id.chatId) %>"><%= c._id.channel %> <%= c._id.chatId %> (<%= c.count %>)</a><% } %></p>
+<% } %>
+<% if (messages.length === 0) { %><p>No messages yet.</p><% } else { %>
+<div class="table-scroll"><table>
+  <thead><tr><th>When</th><th>Chat</th><th>Who</th><th>Message</th><th>Listings sent</th></tr></thead>
+  <tbody>
+  <% for (const m of messages) { %>
+    <tr>
+      <td><%= shown(m.createdAt) %></td><td><%= m.channel %> <%= m.chatId %></td><td><%= m.role === 'customer' ? 'Customer' : 'Bot' %></td>
+      <td style="white-space:pre-wrap"><%= m.text %></td>
+      <td><% for (const id of m.listingIds) { %><div><%= listingLabel(id) %></div><% } %></td>
+    </tr>
+  <% } %>
+  </tbody>
+</table></div>
+<p class="row-actions">Page <%= pageNumber %> of <%= pages %>
+  <% if (pageNumber > 1) { %><a rel="prev" href="?page=<%= pageNumber - 1 %><%= chat ? '&chat=' + encodeURIComponent(chat) : '' %>">Newer</a><% } %>
+  <% if (pageNumber < pages) { %><a rel="next" href="?page=<%= pageNumber + 1 %><%= chat ? '&chat=' + encodeURIComponent(chat) : '' %>">Older</a><% } %></p>
+<% } %>
+<%- include("../../dashboard/views/footer") %>

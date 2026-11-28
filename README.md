@@ -37,3 +37,15 @@ npm start                 # the app; set the LIVEKIT_ and VOICE_ variables in .e
 ```
 
 Then open http://127.0.0.1:3000/voice and press **Start talking**. Browsers allow the microphone only on `localhost`/`127.0.0.1` or over HTTPS; to reach the page from another machine, serve both the app and LiveKit (`wss://`) over HTTPS.
+
+## Agent Bots: real estate on Telegram (optional)
+
+Agent Bots answer customers on Telegram from a Dataset you import, following a Markdown Conversation Guide. They are managed in the web console at `/agents` (same login as the dashboard).
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token. Start the app (`npm start`). On a fresh database a **Sample Real Estate Bot** and a **Sample listings** Dataset (from `dataset/sample-listings.csv`, images in `dataset/images/`) are created for you (only when there are no bots yet; set `AGENT_SAMPLE_BOT_TOKEN` to pre-fill the token).
+2. Open `http://localhost:<PORT>/agents`, open the sample bot, paste your token, and **Save**, then **Start**. A bad token shows an error and does not stop the app.
+3. Try it without Telegram in the **Test chat** box on the bot page ("2 bed near marina"), or message the bot on Telegram.
+4. To take bookings, click **New link code** on the bot page and send `/link CODE` to the bot from the Property Agent's Telegram account. Until a Property Agent is linked, the bot tells customers booking is unavailable. Once linked, customers can ask for a viewing; the Property Agent gets Confirm/Decline buttons, then is asked for a location pin, which the bot relays to the customer.
+5. Your own data: **New Dataset**, upload a CSV or JSON file (or drop it in `dataset/`), map the location, unit type, price, images and payment fields, and check the missing-images report. Edit the bot's Conversation Guide in the console; changes apply to the next message.
+
+Set `DATASET_DIR` to use another folder. Chat logs and Appointments are on each bot's page.

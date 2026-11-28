@@ -54,6 +54,7 @@ export async function render(reply: FastifyReply, view: string, data: Record<str
     activeSection: ({ task: "tasks", note: "notes", user: "users", run: "runs", "run-totals": "runs" } as Record<string, string>)[view] ?? view,
     viewer: reply.request.user,
     voicePage: reply.server.voicePage === true,
+    agentsPage: reply.server.agentsPage === true,
     ...data,
   });
   return reply.type("text/html; charset=utf-8").send(html);

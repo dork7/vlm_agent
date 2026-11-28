@@ -94,6 +94,19 @@
     button:active { transform: translateY(1px); }
     button:disabled { opacity: .55; cursor: wait; }
     form.inline { display: inline; }
+    .chat-box { border: 1px solid var(--line); padding: 1rem; max-width: 48rem; max-height: 28rem; overflow: auto; background: var(--wash); }
+    .chat-box .msg { margin: 0 0 .75rem; padding: .5rem .75rem; max-width: 85%; white-space: pre-wrap; }
+    .chat-box .me { margin-left: auto; background: var(--ink); color: var(--paper); }
+    .chat-box .bot { background: var(--paper); border: 1px solid var(--line); }
+    .card { display: grid; grid-template-columns: 120px 1fr; gap: 1rem; border: 1px solid var(--line); background: var(--paper); padding: .75rem; margin: 0 0 .75rem; max-width: 36rem; }
+    .card img { width: 120px; height: 90px; object-fit: cover; }
+    .card .imgs { display: flex; flex-wrap: wrap; gap: .25rem; }
+    .card .imgs img { width: 56px; height: 42px; }
+    .row-actions { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin: 0 0 1.5rem; }
+    .warn { color: var(--warning); }
+    .err { color: var(--danger); }
+    .err-list { margin: 0 0 1.5rem; padding-left: 1.25rem; }
+    select { min-width: 12rem; }
     nav .theme-toggle { min-height: 0; padding: .35rem .75rem; align-self: center; background: var(--paper); color: var(--muted); border-color: var(--line); font-weight: 500; }
     nav .theme-toggle:hover { background: var(--wash); color: var(--ink); }
     form.inline button, #voice-mute, #voice-end { background: var(--paper); color: var(--ink); border-color: var(--strong-line); }
@@ -160,7 +173,7 @@
   <div class="header-inner">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Voice Notes Bot</div>
     <nav aria-label="Main navigation">
-      <% for (const [section, label] of [["tasks", "Tasks"], ["notes", "Notes"], ["realtime", "Talk"], ...(locals.voicePage ? [["voice", "Voice"]] : []), ...(locals.viewer?.isAdmin ? [["runs", "Runs"], ["users", "Users"]] : [])]) { %>
+      <% for (const [section, label] of [["tasks", "Tasks"], ["notes", "Notes"], ["realtime", "Talk"], ...(locals.voicePage ? [["voice", "Voice"]] : []), ...(locals.agentsPage ? [["agents", "Agents"]] : []), ...(locals.viewer?.isAdmin ? [["runs", "Runs"], ["users", "Users"]] : [])]) { %>
         <a href="/<%= section %>"<% if (locals.activeSection === section) { %> aria-current="page"<% } %>><%= label %></a>
       <% } %>
       <button type="button" class="theme-toggle" id="theme-toggle">Theme: Auto</button>

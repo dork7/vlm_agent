@@ -1,0 +1,31 @@
+<%- include("../../dashboard/views/header", { title: dataset.name }) %>
+<h1><%= dataset.name %></h1>
+<p><a href="/agents">← All bots</a></p>
+<% if (imported) { %><p class="status status-succeeded">Imported. Running bots use the new data on their next message.</p><% } %>
+<% if (errors.length) { %><ul class="err-list err"><% for (const e of errors) { %><li><%= e %></li><% } %></ul><% } %>
+<% if (fileError) { %><p class="err"><%= fileError %></p><% } %>
+<p class="meta">File <code><%= dataset.sourceFile %></code> · <%= dataset.rowCount %> rows imported · <%= shown(dataset.importedAt) %></p>
+<% if (!dataset.mapping) { %><p class="warn">Choose the field for each role below before bots can use this Dataset.</p><% } %>
+<h2>Field mapping</h2>
+<form method="post" action="/agents/datasets/<%= dataset._id %>/mapping">
+  <% for (const role of roles) { %>
+    <label for="map-<%= role %>"><%= role.replace('_', ' ') %></label>
+    <select id="map-<%= role %>" name="<%= role %>"><option value="">Choose a field…</option>
+    <% for (const f of fields) { %><option value="<%= f %>" <%= selected[role] === f ? 'selected' : '' %>><%= f %></option><% } %></select>
+  <% } %>
+  <p><button type="submit">Save mapping and import</button></p>
+</form>
+<form class="inline" method="post" action="/agents/datasets/<%= dataset._id %>/reimport"><button type="submit">Re-import from file</button></form>
+<h2>Images</h2>
+<% if (!dataset.mapping) { %><p>Set the mapping to check images.</p><% } else if (dataset.missingImages.length === 0) { %><p class="status status-succeeded">All referenced images were found.</p><% } else { %>
+<p class="warn"><%= dataset.missingImages.length %> referenced images are missing from <code>images/</code>:</p>
+<ul><% for (const m of dataset.missingImages) { %><li>Row <%= m.row %>: <%= m.path %></li><% } %></ul>
+<% } %>
+<h2>Preview (first <%= preview.length %> rows)</h2>
+<p class="meta">Detected fields: <%= fields.join(', ') %></p>
+<div class="table-scroll"><table>
+  <thead><tr><% for (const f of fields) { %><th><%= f %></th><% } %></tr></thead>
+  <tbody><% for (const row of preview) { %><tr><% for (const f of fields) { %><td><%= row[f] %></td><% } %></tr><% } %></tbody>
+</table></div>
+<form method="post" action="/agents/datasets/<%= dataset._id %>/delete"><button type="submit">Delete Dataset</button></form>
+<%- include("../../dashboard/views/footer") %>

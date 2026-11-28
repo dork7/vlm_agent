@@ -1,0 +1,77 @@
+<%- include("../../dashboard/views/header", { title: isNew ? "New bot" : bot.name }) %>
+<h1><%= isNew ? "New Agent Bot" : bot.name %></h1>
+<p><a href="/agents">← All bots</a></p>
+<% if (locals.saved) { %><p class="status status-succeeded">Saved.</p><% } %>
+<% if (errors.length) { %><ul class="err-list err"><% for (const e of errors) { %><li><%= e %></li><% } %></ul><% } %>
+<% const persona = bot.persona || {}; %>
+<form method="post" action="<%= isNew ? '/agents/bots' : '/agents/bots/' + id %>">
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" value="<%= bot.name || '' %>" required>
+  <label for="token">Telegram token<% if (!isNew) { %> (currently <code><%= mask(bot.token) %></code>; leave blank to keep)<% } %></label>
+  <input type="password" id="token" name="token" autocomplete="off" placeholder="123456:ABC-DEF…" <%= isNew ? 'required' : '' %>>
+  <label for="datasetId">Dataset</label>
+  <select id="datasetId" name="datasetId">
+    <option value="">None</option>
+    <% for (const d of datasets) { %><option value="<%= d._id %>" <%= bot.datasetId && String(bot.datasetId) === String(d._id) ? 'selected' : '' %>><%= d.name %></option><% } %>
+  </select>
+  <label for="tone">Tone</label><input type="text" id="tone" name="tone" value="<%= persona.tone %>">
+  <label for="language">Language</label><input type="text" id="language" name="language" value="<%= persona.language %>">
+  <label for="model">Model (optional, tried before the default list)</label><input type="text" id="model" name="model" value="<%= persona.model || '' %>" placeholder="e.g. openai/gpt-4o-mini">
+  <label for="temperature">Temperature (0–2)</label><input type="text" id="temperature" name="temperature" value="<%= persona.temperature %>">
+  <label for="maxResults">Max results per reply (1–10)</label><input type="text" id="maxResults" name="maxResults" value="<%= persona.maxResults %>">
+  <label for="guide">Conversation Guide (Markdown)</label>
+  <textarea id="guide" name="guide" rows="14"><%= bot.guide || '' %></textarea>
+  <p><button type="submit"><%= isNew ? 'Create bot' : 'Save' %></button></p>
+</form>
+<% if (!isNew) { %>
+<h2>Telegram</h2>
+<% if (!manager) { %><p class="meta">Telegram is not enabled in this app run.</p><% } else { %>
+<p>Status: <span class="status status-<%= status.state === 'error' ? 'failed' : status.state === 'running' ? 'succeeded' : 'in-progress' %>"><%= status.state %></span>
+<% if (status.error) { %> <span class="err"><%= status.error %></span><% } %></p>
+<div class="row-actions">
+  <form class="inline" method="post" action="/agents/bots/<%= id %>/start"><button type="submit"><%= status.state === 'running' ? 'Restart' : 'Start' %></button></form>
+  <% if (status.state === 'running') { %><form class="inline" method="post" action="/agents/bots/<%= id %>/stop"><button type="submit">Stop</button></form><% } %>
+</div>
+<% } %>
+<h2>Property Agent</h2>
+<% if (bot.propertyAgent.telegramId === null) { %>
+  <p class="warn">No Property Agent is linked, so customers cannot book viewings.</p>
+<% } else { %>
+  <p>Linked: <%= bot.propertyAgent.name || 'Property Agent' %> (Telegram ID <%= bot.propertyAgent.telegramId %>).</p>
+  <form class="inline" method="post" action="/agents/bots/<%= id %>/unlink"><button type="submit">Unlink</button></form>
+<% } %>
+<% if (locals.linkLive) { %>
+  <p>One-time code: <strong><code><%= bot.propertyAgent.linkCode %></code></strong>, valid until <%= shown(bot.propertyAgent.linkCodeExpiresAt) %>. The Property Agent sends <code>/link <%= bot.propertyAgent.linkCode %></code> to the bot on Telegram.</p>
+<% } %>
+<form class="inline" method="post" action="/agents/bots/<%= id %>/link-code"><button type="submit">New link code</button></form>
+<p class="row-actions"><a href="/agents/bots/<%= id %>/logs">Chat logs</a> <a href="/agents/bots/<%= id %>/appointments">Appointments</a></p>
+
+<h2>Test chat</h2>
+<div id="chat" class="chat-box" aria-live="polite"></div>
+<form id="chat-form" class="voice-ask"><input type="text" id="chat-text" placeholder="Say something to the bot…" autocomplete="off"><button type="submit">Send</button><button type="button" id="chat-reset">Reset</button></form>
+<script>
+(function () {
+  var base = "/agents/bots/<%= id %>/test-chat", box = document.getElementById("chat"), input = document.getElementById("chat-text");
+  function add(cls, text) { var d = document.createElement("div"); d.className = "msg " + cls; d.textContent = text; box.appendChild(d); box.scrollTop = box.scrollHeight; return d; }
+  function card(l) {
+    var c = document.createElement("div"); c.className = "card";
+    var imgs = document.createElement("div"); imgs.className = "imgs";
+    (l.images || []).forEach(function (src) { var i = document.createElement("img"); i.alt = ""; i.src = "/agents/files/" + src.split("/").map(encodeURIComponent).join("/"); i.onerror = function () { i.remove(); }; imgs.appendChild(i); });
+    var t = document.createElement("div");
+    [["📍 ", l.location], ["🏠 ", l.unitType], ["💰 ", l.priceText], ["💳 ", l.payment]].forEach(function (p) { if (p[1]) { var d = document.createElement("div"); d.textContent = p[0] + p[1]; t.appendChild(d); } });
+    c.appendChild(imgs); c.appendChild(t); box.appendChild(c);
+  }
+  document.getElementById("chat-form").addEventListener("submit", function (e) {
+    e.preventDefault(); var text = input.value.trim(); if (!text) return; input.value = ""; add("me", text);
+    var wait = add("bot", "…");
+    fetch(base, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: text }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (r) { wait.textContent = r.ok ? r.j.text : (r.j.error || "Something went wrong."); if (r.ok) r.j.listings.forEach(card); box.scrollTop = box.scrollHeight; })
+      .catch(function () { wait.textContent = "Could not reach the server."; });
+  });
+  document.getElementById("chat-reset").addEventListener("click", function () { fetch(base + "/reset", { method: "POST" }).then(function () { box.textContent = ""; }); });
+})();
+</script>
+<form method="post" action="/agents/bots/<%= id %>/delete"><button type="submit">Delete bot</button></form>
+<% } %>
+<%- include("../../dashboard/views/footer") %>

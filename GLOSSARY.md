@@ -131,3 +131,37 @@ _Avoid_: Share, invite, link
 **Board**:
 The Owner's overview of who is doing what, with the activity feed.
 _Avoid_: Dashboard, overview
+
+## Agent Bots (real estate and other Dataset-driven chat)
+
+**Agent Bot**:
+A configured, runnable Telegram bot with its own token, Dataset, Persona and Conversation Guide, managed at `/agents`.
+_Avoid_: Agent, chatbot
+
+**Dataset**:
+The imported rows an Agent Bot answers from, with a mapping of which field is location, unit type, price, images and payment.
+_Avoid_: Database, inventory (Inventory already means something else)
+
+**Listing**:
+One Dataset row shown to a Customer, with photos, price and payment options.
+_Avoid_: Property, row, item
+
+**Conversation Guide**:
+The Markdown file describing how an Agent Bot talks and what it asks; the model follows it freely.
+_Avoid_: Script, prompt, flow
+
+**Persona**:
+An Agent Bot's tone, language, model, temperature and maximum results per reply.
+_Avoid_: Settings, character
+
+**Customer**:
+The person chatting with an Agent Bot.
+_Avoid_: User (a User has a dashboard account), lead
+
+**Property Agent**:
+The person who hosts viewings for an Agent Bot, links to it with a one-time code, and confirms Appointments.
+_Avoid_: Agent alone, broker, host
+
+**Appointment**:
+A Customer's requested viewing of one Listing at a date and time, in a state: requested, confirmed, declined or location-shared. Only the Property Agent moves it past requested.
+_Avoid_: Booking, viewing, meeting
